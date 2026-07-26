@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       LUA: lua-5.1.5
-      LUAROCKS: 3.7.0
+      LUAROCKS: 3.13.0
     steps:
       - uses: actions/checkout@v4
 

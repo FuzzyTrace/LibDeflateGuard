@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       LUA: ${{ matrix.LUA }}
-      LUAROCKS: 3.7.0
+      LUAROCKS: 3.13.0
     steps:
       - uses: actions/checkout@v4
 
@@ -84,7 +84,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       LUA: ${{ matrix.LUA }}
-      LUAROCKS: 3.7.0
+      LUAROCKS: 3.13.0
     steps:
       - uses: actions/checkout@v4
 

@@ -33,7 +33,7 @@ MakePackage() {
   mkdir -p "${staging}"
   cp LibDeflateGuard.lua LibDeflateGuard.xml LICENSE.txt README.md changelog.md \
     "${staging}/"
-  git rev-parse HEAD > "${staging}/COMMIT"
+  git rev-parse HEAD >"${staging}/COMMIT"
   (
     cd .release
     zip -9 -r "${filename}.zip" LibDeflateGuard
