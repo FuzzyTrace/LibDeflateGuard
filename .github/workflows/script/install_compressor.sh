@@ -40,7 +40,8 @@ nproc() {
 BuildZlib() {
   cd
   curl --fail --retry 10 --retry-delay 10 --location \
-    "https://zlib.net/zlib-${ZLIB_VERSION}.tar.gz" | tar xz
+    "https://github.com/madler/zlib/archive/refs/tags/v${ZLIB_VERSION}.tar.gz" |
+    tar xz
   cd "zlib-${ZLIB_VERSION}"
   if [[ "${platform}" == "windows" ]]; then
     make -f win32/Makefile.gcc

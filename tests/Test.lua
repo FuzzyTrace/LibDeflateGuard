@@ -1535,11 +1535,10 @@ function TestDecompress:TestZlibCoverFast()
   -- The historical vector has complete trailing bytes and is rejected.
   CheckStrictTrailing(HexToString("63 18 5 8c 10 8 0 0 0 0"))
   -- Continous and wrap aroudn window
-  CheckDecompressIncludingError(HexToString(
-                                  "63 60 60 18 c9 0 8 18 18 18 26 c0 28 0 29 0 0 0"),
-                                nil)
+  CheckStrictTrailing(HexToString(
+                        "63 60 60 18 c9 0 8 18 18 18 26 c0 28 0 29 0 0 0"))
   -- Copy direct from output
-  CheckDecompressIncludingError(HexToString("63 0 3 0 0 0 0 0"), nil)
+  CheckStrictTrailing(HexToString("63 0 3 0 0 0 0 0"))
 end
 function TestDecompress:TestAdditionalCoverage()
   -- no zlib FLG
