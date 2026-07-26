@@ -11,12 +11,12 @@ on:
 
 jobs:
   lua_cov:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       LUA: luajit-2.1.0-beta3
       LUAROCKS: 3.7.0
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Lua and Luarocks
         run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
@@ -60,7 +60,7 @@ jobs:
       - name: Print the code coverage report
         run: cat luacov.report.out
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: code_coverage_report
           path: luacov.report.out

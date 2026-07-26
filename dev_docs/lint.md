@@ -8,7 +8,7 @@ Linting is checked in CI.
 
 Please use [lua_cov.yml](../.github/workflows/lua_lint.yml) as the reference.
 We use luacheck as the linter.
-There should be not lint warnings in LibDeflate code.
+There should be no lint warnings in LibDeflateGuard code.
 
 You can install luacheck by Luarocks:
 `luarocks install luacheck`

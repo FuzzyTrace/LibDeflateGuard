@@ -23,13 +23,13 @@ jobs:
             "luajit-2.0.5",
             "luajit-2.1.0-beta3",
           ]
-        os: ["windows-2019"]
+        os: ["windows-2022"]
     runs-on: ${{ matrix.os }}
     env:
       LUA: ${{ matrix.LUA }}
       LUAROCKS: 3.7.0
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install GNU Make
         run: choco install make --version=4.3 -y --allowdowngrade
@@ -50,6 +50,11 @@ jobs:
           . .github/workflows/script/setenv_lua.ps1
           lua -v
           lua examples/example.lua
+
+      - name: Run focused guard tests
+        run: |
+          . .github/workflows/script/setenv_lua.ps1
+          lua tests/GuardTest.lua
 
       - name: Install luaunit
         run: |
@@ -75,13 +80,13 @@ jobs:
             "luajit-2.0.5",
             "luajit-2.1.0-beta3",
           ]
-        os: ["ubuntu-20.04", "macos-10.15"]
+        os: ["ubuntu-24.04", "macos-15-intel"]
     runs-on: ${{ matrix.os }}
     env:
       LUA: ${{ matrix.LUA }}
       LUAROCKS: 3.7.0
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Lua and Luarocks
         run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
@@ -94,6 +99,12 @@ jobs:
           set -exuo pipefail
           source .github/workflows/script/setenv_lua.sh
           lua examples/example.lua
+
+      - name: Run focused guard tests
+        run: |
+          set -exuo pipefail
+          source .github/workflows/script/setenv_lua.sh
+          lua tests/GuardTest.lua
 
       - name: Install luaunit
         run: |

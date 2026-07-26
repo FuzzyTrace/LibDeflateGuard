@@ -14,9 +14,9 @@ jobs:
   check_lua_format:
     strategy:
       fail-fast: false
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install LuaFormatter
         run: |
@@ -36,9 +36,9 @@ jobs:
         run: git diff --exit-code
 
   check_doc_format:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install prettier
         run: |
@@ -52,9 +52,9 @@ jobs:
         run: git diff --exit-code
 
   check_sh_format:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install shfmt
         run: |
@@ -72,9 +72,9 @@ jobs:
         run: git diff --exit-code
 
   check_c_format:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Show the version of clang-format
         run: clang-format --version
@@ -86,9 +86,9 @@ jobs:
         run: git diff --exit-code
 
   check_pwsh_format:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install PowerShell-Beautifier
         shell: pwsh
@@ -101,9 +101,9 @@ jobs:
         run: git diff --exit-code
 
   check_py_format:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install yapf as the python formatter
         run: sudo python3 -m pip install yapf==0.31.0

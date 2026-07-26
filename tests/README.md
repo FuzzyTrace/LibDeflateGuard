@@ -26,7 +26,7 @@ as a golden reference, including the version of Luarocks packages
 
 ## Install reference compressor/decompressor and add to PATH
 
-Two reference programs are included to test LibDeflate for DEFLATE format compliance. Building them and add them to the PATH are required,
+Two reference programs are included to test LibDeflateGuard for DEFLATE format compliance. Building them and add them to the PATH are required,
 otherwise most tests will fail.
 
 [puff](pufftest.c): Decompressor only.
@@ -43,7 +43,7 @@ otherwise most tests will fail.
 
 ## Run the tests
 
-When running test, the working directory must be the root directory of this repository (The directory where LibDeflate.lua locates),
+When running tests, the working directory must be the repository root, where LibDeflateGuard.lua is located.
 otherwise most tests will fail.
 
 Run two test scripts at the same time is **NOT SUPPORTED**.
@@ -90,7 +90,7 @@ If you are using Windows, I suggest to use a Bash terminal, such as Git Bash
 
 ## Add tests
 
-1. If new API is added in [LibDeflate.lua](../LibDeflate.lua), please add the function name into `TestExported:TestExported`
+1. If a new API is added in [LibDeflateGuard.lua](../LibDeflateGuard.lua), add the function name to `TestExported:TestExported`.
 
 2. All test code should be added to [Test.lua](Test.lua)
 
@@ -104,5 +104,5 @@ If you are using Windows, I suggest to use a Bash terminal, such as Git Bash
 ## Licenses for files under this directory
 
 This folder contains some third party code and data.
-The license used by LibDeflate does not apply to the 3rdparty code or data.
+The license used by LibDeflateGuard does not apply to the 3rdparty code or data.
 Their original licenses shall be complied when used.

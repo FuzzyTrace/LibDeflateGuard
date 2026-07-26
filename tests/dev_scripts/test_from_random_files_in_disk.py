@@ -4,7 +4,7 @@ Test using random files in disk.
 
 1st argument: a directory
 
-Call this script in the folder that contains LibDeflate.lua
+Call this script in the folder that contains LibDeflateGuard.lua
 
 Record all small files in the directory and its subdir in a list
 and continues to randomly pick up a file from the list.

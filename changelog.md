@@ -1,3 +1,30 @@
+### LibDeflateGuard v1.0.0
+
+- Established the independently maintained `LibDeflateGuard` module identity
+  from upstream LibDeflate `1.0.2-release` at commit
+  `afc3b78d12fb3bcfa6b21e5332031ad3d7572e19`.
+- Removed LibStub lookup, registration, and substitution. The fork now returns
+  a private module and can attach it only to the loading addon's private
+  namespace.
+- Added default and caller-configurable compressed-input, output, block,
+  Huffman-symbol, and deterministic work-unit limits.
+- Added stable, non-throwing symbolic failures and exception containment at
+  decompression and channel-decode seams.
+- Rejects complete trailing bytes after raw Deflate and zlib members.
+- Rejects malformed and non-canonical World of Warcraft addon-channel escapes.
+- Rejects non-canonical custom-codec escape input and print-codec terminal
+  padding.
+- Uses a supplied zlib dictionary only when FDICT and DICTID bind it to the
+  member.
+- Retains RFC 1951, zlib, World of Warcraft channel, and LibDeflate print-codec
+  wire compatibility, including an RCLootCouncil compatibility fixture.
+- Added independent regression coverage for module collisions, valid block
+  forms, malformed input, resource limits, codecs, and compatibility data.
+- Documented security scope, limits, provenance, and the upstream update
+  process.
+
+The entries below are the preserved upstream LibDeflate release history.
+
 ### v1.0.2-release
 
 - Change the license to the zlib license (Formerly LGPLv3). This license is more permissive than LGPLv3.

@@ -95,7 +95,7 @@ InstallLua() {
 
   cd
   echo ">> Downloading Lua-${version}"
-  curl --retry 10 --retry-delay 10 http://www.lua.org/ftp/lua-${version}.tar.gz | tar xz
+  curl --retry 10 --retry-delay 10 https://www.lua.org/ftp/lua-${version}.tar.gz | tar xz
   cd lua-${version}
 
   # Build Lua without backwards compatibility for testing
@@ -133,7 +133,7 @@ InstallLuarocksUnix() {
   cd
   echo ">> Downloading luarocks-${version}"
   local luarocks_base=luarocks-${version}
-  curl --retry 10 --retry-delay 10 --location http://luarocks.org/releases/${luarocks_base}.tar.gz | tar xz
+  curl --retry 10 --retry-delay 10 --location https://luarocks.org/releases/${luarocks_base}.tar.gz | tar xz
 
   echo ">> Compiling luarocks-${version}"
   cd "${luarocks_base}"
@@ -162,7 +162,7 @@ InstallLuarocksWindows() {
   cd
   echo ">> Downloading luarocks-${version}"
   local luarocks_base=luarocks-${version}-win32
-  curl --retry 10 --retry-delay 10 --location "http://luarocks.org/releases/${luarocks_base}.zip" -o "${luarocks_base}.zip"
+  curl --retry 10 --retry-delay 10 --location "https://luarocks.org/releases/${luarocks_base}.zip" -o "${luarocks_base}.zip"
   unzip -o "${luarocks_base}.zip"
 
   echo ">> Compiling luarocks-${version}"

@@ -19,7 +19,7 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
 
---]] -- Run this tests at the folder where LibDeflate.lua located, like this.
+--]] -- Run these tests at the folder where LibDeflateGuard.lua is located.
 -- lua tests/Test.lua
 -- Don't run two "tests/Test.lua" at the same time,
 -- because they will conflict!!!
@@ -28,13 +28,13 @@ package.path = ("?.lua;tests/LibCompress/?.lua;") .. (package.path or "")
 do
   local test_lua = io.open("tests/Test.lua")
   assert(test_lua,
-         "Must run this script in the root folder of LibDeflate repository")
+         "Must run this script in the root folder of LibDeflateGuard repository")
   test_lua:close()
 end
 
 local old_globals = {}
 for k, v in pairs(_G) do old_globals[k] = v end
-local LibDeflate = require("LibDeflate")
+local LibDeflate = require("LibDeflateGuard")
 for k, v in pairs(_G) do
   assert(v == old_globals[k], "LibDeflate global leak at key: " .. tostring(k))
 end
@@ -64,6 +64,7 @@ local string_sub = string.sub
 local unpack = unpack or table.unpack
 local table_insert = table.insert
 local table_concat = table.concat
+LegacyTests = {}
 
 math.randomseed(0) -- I don't like true random tests that I cant 100% reproduce.
 
@@ -501,10 +502,10 @@ local function CheckCompressAndDecompress(string_or_filename, is_file, levels,
 
         local decompress_to_run = {
           {"DecompressDeflate", compress_data},
-          {"DecompressDeflateWithDict", compress_data, dictionary32768, configs},
+          {"DecompressDeflateWithDict", compress_data, dictionary32768},
 
-          {"DecompressZlib", compress_data, configs},
-          {"DecompressZlibWithDict", compress_data, dictionary32768, configs}
+          {"DecompressZlib", compress_data},
+          {"DecompressZlibWithDict", compress_data, dictionary32768}
         }
         lu.assertEquals(#decompress_to_run, #compress_to_run)
 
@@ -660,14 +661,19 @@ local function CheckDecompressIncludingError(compress, decompress, is_zlib)
     d, decompress_status = LibDeflate:DecompressDeflate(compress)
   end
   lu.assertTrue(type(d) == "string" or type(d) == "nil")
-  lu.assertEquals(type(decompress_status), "number")
-  lu.assertEquals(decompress_status % 1, 0)
+  if d then
+    lu.assertEquals(decompress_status, 0)
+  else
+    lu.assertEquals(type(decompress_status), "string")
+  end
   if d ~= decompress then
     lu.assertTrue(false, ("My decompress does not match expected result." ..
-                    "expected: %s, actual: %s, Returned status of decompress: %d"):format(
+                    "expected: %s, actual: %s, Returned status of decompress: %s"):format(
                     StringForPrint(StringToHex(d)),
-                    StringForPrint(StringToHex(decompress)), decompress_status))
+                    StringForPrint(StringToHex(decompress)),
+                    tostring(decompress_status)))
   else
+    if os.getenv("LIBDEFLATEGUARD_SKIP_EXTERNAL") == "1" then return end
     -- Check my decompress result with "puff"
     local input_filename = "tests/tmpFile"
     local inputFile = io.open(input_filename, "wb")
@@ -719,6 +725,12 @@ end
 
 local function CheckZlibDecompressIncludingError(compress, decompress)
   return CheckDecompressIncludingError(compress, decompress, true)
+end
+
+local function CheckStrictTrailing(compress)
+  local output, decode_error = LibDeflate:DecompressDeflate(compress)
+  lu.assertNil(output)
+  lu.assertEquals(decode_error, LibDeflate.ERRORS.TRAILING_DATA)
 end
 
 local function CreateDictionaryWithoutVerify(str)
@@ -1361,8 +1373,8 @@ function TestDecompress:TestFixThenStore1()
                                 "1" .. str .. str)
 end
 function TestDecompress:TestIncomplete()
-  -- Additonal 1 byte after the end of compression data
-  CheckDecompressIncludingError("\001\001\000\254\255\010\000", "\010")
+  -- Additional complete byte after the end of compression data.
+  CheckStrictTrailing("\001\001\000\254\255\010\000")
 end
 function TestDecompress:TestStoreSizeTooBig()
   CheckDecompressIncludingError("\001\001\000\254\255", nil)
@@ -1520,15 +1532,14 @@ function TestDecompress:TestZlibCoverFast()
                                   "d c7 1 ae eb 38 c 4 41 a0 87 72 de df fb 1f b8 36 b1 38 5d ff ff 0"),
                                 nil)
   -- Very common case
-  CheckDecompressIncludingError(HexToString("63 18 5 8c 10 8 0 0 0 0"),
-                                ("\000"):rep(258) .. ("\000\001"):rep(4))
+  -- The historical vector has complete trailing bytes and is rejected.
+  CheckStrictTrailing(HexToString("63 18 5 8c 10 8 0 0 0 0"))
   -- Continous and wrap aroudn window
   CheckDecompressIncludingError(HexToString(
                                   "63 60 60 18 c9 0 8 18 18 18 26 c0 28 0 29 0 0 0"),
-                                ("\000"):rep(261) .. ("\144") .. ("\000"):rep(6) ..
-                                  ("\144\000"))
+                                nil)
   -- Copy direct from output
-  CheckDecompressIncludingError(HexToString("63 0 3 0 0 0 0 0"), ("\000"):rep(6))
+  CheckDecompressIncludingError(HexToString("63 0 3 0 0 0 0 0"), nil)
 end
 function TestDecompress:TestAdditionalCoverage()
   -- no zlib FLG
@@ -1550,7 +1561,7 @@ function TestDecompress:TestAdditionalCoverage()
                                   ("\000"):rep(17202), nil)
 end
 
-function TestDecompress:Test2ndReturn()
+function LegacyTests:LegacyTrailingByteCount()
   for _ = 1, 10 do
     local str = GetLimitedRandomString(math.random(100, 300))
     local compressed = LibDeflate:CompressDeflate(str)
@@ -1739,7 +1750,7 @@ function TestInternals:TestAdler32()
   lu.assertEquals(LibDeflate:Adler32(adler32Test2), 0xD6A07E29)
 end
 
-function TestInternals:TestLibStub()
+function LegacyTests:LegacyLibStubNotApplicable()
   -- Start of LibStub
   local LIBSTUB_MAJOR, LIBSTUB_MINOR = "LibStub", 2
   -- NOTE: It is intended that LibStub is global
@@ -2340,10 +2351,10 @@ local function TestInvalidCompressDecompressArgs(msg_prefix, func,
 end
 
 function TestErrors:TestAdler32()
-  lu.assertErrorMsgContains("Usage: LibDeflate:Adler32(str): 'str'" ..
+  lu.assertErrorMsgContains("Usage: LibDeflateGuard:Adler32(str): 'str'" ..
                               " - string expected got 'nil'.",
                             function() LibDeflate:Adler32() end)
-  lu.assertErrorMsgContains("Usage: LibDeflate:Adler32(str): 'str'" ..
+  lu.assertErrorMsgContains("Usage: LibDeflateGuard:Adler32(str): 'str'" ..
                               " - string expected got 'table'.",
                             function() LibDeflate:Adler32({}) end)
   LibDeflate:Adler32("") -- No error
@@ -2351,28 +2362,28 @@ end
 function TestErrors:TestCreateDictionary()
   LibDeflate:CreateDictionary("1", 1, 0x00320032)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'str' - string expected got 'nil'.",
     function() LibDeflate:CreateDictionary(nil, 1, 0x00320032) end)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'str' - string expected got 'table'.",
     function() LibDeflate:CreateDictionary({}, 1, 0x00320032) end)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'strlen' - number expected got 'nil'.",
     function() LibDeflate:CreateDictionary("1", nil, 0x00320032) end)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'adler32' - number expected got 'nil'.",
     function() LibDeflate:CreateDictionary("1", 1, nil) end)
   lu.assertEquals(LibDeflate:Adler32(""), 1)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'str' - Empty string is not allowed.",
     function() LibDeflate:CreateDictionary("", 0, 1) end)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'str' - string longer than 32768 bytes is not allowed." ..
       " Got 32769 bytes.", function()
       LibDeflate:CreateDictionary(("\000"):rep(32769), 32769,
@@ -2382,7 +2393,7 @@ function TestErrors:TestCreateDictionary()
   LibDeflate:CreateDictionary(("\000"):rep(32768), 32768,
                               LibDeflate:Adler32(("\000"):rep(32768)))
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    "Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'strlen' does not match the actual length of 'str'." ..
       " 'strlen': 32767, '#str': 32768 ." ..
       " Please check if 'str' is modified unintentionally.", function()
@@ -2391,7 +2402,7 @@ function TestErrors:TestCreateDictionary()
     end)
   -- ^ Dont calculate Adler32 in run-time in real problem plz.
   lu.assertErrorMsgContains(
-    ("Usage: LibDeflate:CreateDictionary(str, strlen, adler32):" ..
+    ("Usage: LibDeflateGuard:CreateDictionary(str, strlen, adler32):" ..
       " 'adler32' does not match the actual adler32 of 'str'." ..
       " 'adler32': %u, 'Adler32(str)': %u ." ..
       " Please check if 'str' is modified unintentionally."):format(
@@ -2403,67 +2414,67 @@ function TestErrors:TestCreateDictionary()
 end
 function TestErrors:TestCompressDeflate()
   TestInvalidCompressDecompressArgs(
-    "Usage: LibDeflate:CompressDeflate(str, configs): ", function(str, _,
+    "Usage: LibDeflateGuard:CompressDeflate(str, configs): ", function(str, _,
                                                                   configs)
       return LibDeflate:CompressDeflate(str, configs)
     end, false, true)
 end
 function TestErrors:TestCompressDeflateWithDict()
   TestInvalidCompressDecompressArgs(
-    "Usage: LibDeflate:CompressDeflateWithDict" ..
+    "Usage: LibDeflateGuard:CompressDeflateWithDict" ..
       "(str, dictionary, configs): ", function(str, dictionary, configs)
       return LibDeflate:CompressDeflateWithDict(str, dictionary, configs)
     end, true, true)
 end
 function TestErrors:TestCompressZlib()
   TestInvalidCompressDecompressArgs(
-    "Usage: LibDeflate:CompressZlib(str, configs): ",
+    "Usage: LibDeflateGuard:CompressZlib(str, configs): ",
     function(str, _, configs) return LibDeflate:CompressZlib(str, configs) end,
     false, true)
 end
 function TestErrors:TestCompressZlibWithDict()
-  TestInvalidCompressDecompressArgs("Usage: LibDeflate:CompressZlibWithDict" ..
+  TestInvalidCompressDecompressArgs("Usage: LibDeflateGuard:CompressZlibWithDict" ..
                                       "(str, dictionary, configs): ",
                                     function(str, dictionary, configs)
     return LibDeflate:CompressZlibWithDict(str, dictionary, configs)
   end, true, true)
 end
-function TestErrors:TestDecompressDeflate()
+function LegacyTests:LegacyThrowingDecompressDeflate()
   TestInvalidCompressDecompressArgs(
-    "Usage: LibDeflate:DecompressDeflate(str): ",
+    "Usage: LibDeflateGuard:DecompressDeflate(str): ",
     function(str, _, _) return LibDeflate:DecompressDeflate(str) end, false,
     false)
 end
-function TestErrors:TestDecompressZlib()
-  TestInvalidCompressDecompressArgs("Usage: LibDeflate:DecompressZlib(str): ",
+function LegacyTests:LegacyThrowingDecompressZlib()
+  TestInvalidCompressDecompressArgs("Usage: LibDeflateGuard:DecompressZlib(str): ",
                                     function(str, _, _)
     return LibDeflate:DecompressZlib(str)
   end, false, false)
 end
-function TestErrors:TestDecompressDeflateWithDict()
+function LegacyTests:LegacyThrowingDecompressDeflateWithDict()
   TestInvalidCompressDecompressArgs(
-    "Usage: LibDeflate:DecompressDeflateWithDict(str, dictionary): ",
+    "Usage: LibDeflateGuard:DecompressDeflateWithDict(str, dictionary): ",
     function(str, dict, _)
       return LibDeflate:DecompressDeflateWithDict(str, dict)
     end, true, false)
 end
-function TestErrors:TestDecompressZlibWithDict()
+function LegacyTests:LegacyThrowingDecompressZlibWithDict()
   TestInvalidCompressDecompressArgs(
-    "Usage: LibDeflate:DecompressZlibWithDict(str, dictionary): ",
+    "Usage: LibDeflateGuard:DecompressZlibWithDict(str, dictionary): ",
     function(str, dict, _)
       return LibDeflate:DecompressZlibWithDict(str, dict)
     end, true, false)
 end
 function TestErrors:TestCreateCodec()
-  lu.assertErrorMsgContains("Usage: LibDeflate:CreateCodec(reserved_chars," ..
+  lu.assertErrorMsgContains("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
                               " escape_chars, map_chars):" ..
                               " All arguments must be string.",
                             function() LibDeflate:CreateCodec(nil, "", "") end)
-  lu.assertErrorMsgContains("Usage: LibDeflate:CreateCodec(reserved_chars," ..
+  lu.assertErrorMsgContains("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
                               " escape_chars, map_chars):" ..
                               " All arguments must be string.",
                             function() LibDeflate:CreateCodec("", nil, "") end)
-  lu.assertErrorMsgContains("Usage: LibDeflate:CreateCodec(reserved_chars," ..
+  lu.assertErrorMsgContains("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
                               " escape_chars, map_chars):" ..
                               " All arguments must be string.",
                             function() LibDeflate:CreateCodec("", "", nil) end)
@@ -2475,31 +2486,29 @@ function TestErrors:TestEncodeDecode()
   lu.assertErrorMsgContains("Usage: codec:Encode(str):" ..
                               " 'str' - string expected got 'nil'.",
                             function() codec:Encode() end)
-  lu.assertErrorMsgContains("Usage: codec:Decode(str):" ..
-                              " 'str' - string expected got 'nil'.",
-                            function() codec:Decode() end)
+  local result, decode_error = codec:Decode()
+  lu.assertNil(result)
+  lu.assertEquals(decode_error, LibDeflate.ERRORS.INVALID_ARGUMENT)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:EncodeForWoWAddonChannel(str):" ..
+    "Usage: LibDeflateGuard:EncodeForWoWAddonChannel(str):" ..
       " 'str' - string expected got 'nil'.",
     function() LibDeflate:EncodeForWoWAddonChannel() end)
+  result, decode_error = LibDeflate:DecodeForWoWAddonChannel()
+  lu.assertNil(result)
+  lu.assertEquals(decode_error, LibDeflate.ERRORS.INVALID_ARGUMENT)
   lu.assertErrorMsgContains(
-    "Usage: LibDeflate:DecodeForWoWAddonChannel(str):" ..
-      " 'str' - string expected got 'nil'.",
-    function() LibDeflate:DecodeForWoWAddonChannel() end)
-  lu.assertErrorMsgContains(
-    "Usage: LibDeflate:EncodeForWoWChatChannel(str):" ..
+    "Usage: LibDeflateGuard:EncodeForWoWChatChannel(str):" ..
       " 'str' - string expected got 'nil'.",
     function() LibDeflate:EncodeForWoWChatChannel() end)
-  lu.assertErrorMsgContains(
-    "Usage: LibDeflate:DecodeForWoWChatChannel(str):" ..
-      " 'str' - string expected got 'nil'.",
-    function() LibDeflate:DecodeForWoWChatChannel() end)
-  lu.assertErrorMsgContains("Usage: LibDeflate:EncodeForPrint(str):" ..
+  result, decode_error = LibDeflate:DecodeForWoWChatChannel()
+  lu.assertNil(result)
+  lu.assertEquals(decode_error, LibDeflate.ERRORS.INVALID_ARGUMENT)
+  lu.assertErrorMsgContains("Usage: LibDeflateGuard:EncodeForPrint(str):" ..
                               " 'str' - string expected got 'nil'.",
                             function() LibDeflate:EncodeForPrint() end)
-  lu.assertErrorMsgContains("Usage: LibDeflate:DecodeForPrint(str):" ..
-                              " 'str' - string expected got 'nil'.",
-                            function() LibDeflate:DecodeForPrint() end)
+  result, decode_error = LibDeflate:DecodeForPrint()
+  lu.assertNil(result)
+  lu.assertEquals(decode_error, LibDeflate.ERRORS.INVALID_ARGUMENT)
 end
 
 local lua_program = "lua"
@@ -2512,7 +2521,7 @@ local function RunCommandline(args, stdin)
   end
   local stdout_filename = "tests/test.stderr"
   local stderr_filename = "tests/test.stdout"
-  local libdeflate_file = "LibDeflate.lua"
+  local libdeflate_file = "LibDeflateGuard.lua"
   local status, _, ret = os.execute(
                            lua_program .. " " .. libdeflate_file .. " " .. args ..
                              " >" .. input_filename .. "> " .. stdout_filename ..
@@ -2540,7 +2549,7 @@ function TestCommandLine:TestHelp()
   lu.assertEquals(returned_status, 0)
 
   local str = LibDeflate._COPYRIGHT ..
-                "\nUsage: lua LibDeflate.lua [OPTION] [INPUT] [OUTPUT]\n" ..
+                "\nUsage: lua LibDeflateGuard.lua [OPTION] [INPUT] [OUTPUT]\n" ..
                 "  -0    store only. no compression.\n" ..
                 "  -1    fastest compression.\n" ..
                 "  -9    slowest and best compression.\n" ..
@@ -2584,7 +2593,8 @@ function TestCommandLine:TestErrors()
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
   lu.assertStrContains(stderr,
-                       ("LibDeflate: Invalid argument: %s"):format("-invalid"))
+                       ("LibDeflateGuard: Invalid argument: %s"):format(
+                         "-invalid"))
 
   returned_status, stdout, stderr = RunCommandline(
                                       "tests/data/reference/item_strings.txt --dict")
@@ -2597,25 +2607,25 @@ function TestCommandLine:TestErrors()
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
   lu.assertStrContains(stderr,
-                       ("LibDeflate: Cannot read the dictionary file '%s':"):format(
+                       ("LibDeflateGuard: Cannot read the dictionary file '%s':"):format(
                          "DNE"))
 
   returned_status, stdout, stderr = RunCommandline("DNE DNE")
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
-  lu.assertStrContains(stderr, "LibDeflate: Cannot read the file 'DNE':")
+  lu.assertStrContains(stderr, "LibDeflateGuard: Cannot read the file 'DNE':")
 
   returned_status, stdout, stderr = RunCommandline(
                                       "tests/data/reference/item_strings.txt ..")
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
-  lu.assertStrContains(stderr, "LibDeflate: Cannot write the file '..':")
+  lu.assertStrContains(stderr, "LibDeflateGuard: Cannot write the file '..':")
 
   returned_status, stdout, stderr = RunCommandline(
                                       "tests/data/reference/item_strings.txt")
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
-  lu.assertStrContains(stderr, "LibDeflate:" ..
+  lu.assertStrContains(stderr, "LibDeflateGuard:" ..
                          " You must specify both input and output files.")
 
   returned_status, stdout, stderr = RunCommandline(
@@ -2623,7 +2633,7 @@ function TestCommandLine:TestErrors()
                                         " tests/test_commandline.tmp")
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
-  lu.assertStrContains(stderr, "LibDeflate: Decompress fails.")
+  lu.assertStrContains(stderr, "LibDeflateGuard: Decompress fails.")
 end
 
 function TestCommandLine:TestCompressAndDecompress()
@@ -2676,7 +2686,14 @@ function TestCommandLine:TestCompressAndDecompress()
                              GetFileData("tests/test_commandline.tmp"):len()))
       lu.assertEquals(returned_status, 0)
       local result
-      if func_name:find("Dict") then
+      if func_name:find("^Decompress") then
+        if func_name:find("Dict") then
+          result = LibDeflate[func_name](LibDeflate, GetFileData(inputs[k]),
+                                         dictionary32768)
+        else
+          result = LibDeflate[func_name](LibDeflate, GetFileData(inputs[k]))
+        end
+      elseif func_name:find("Dict") then
         result = LibDeflate[func_name](LibDeflate, GetFileData(inputs[k]),
                                        dictionary32768, configs)
       else
@@ -2721,8 +2738,11 @@ function TestExported:TestExported()
     DecodeForWoWChatChannel = "function",
     internals = "table",
     _VERSION = "string",
-    _MAJOR = "string",
-    _MINOR = "number",
+    _NAME = "string",
+    _MODULE = "string",
+    _UPSTREAM_VERSION = "string",
+    ERRORS = "table",
+    DEFAULT_LIMITS = "table",
     Adler32 = "function",
     CreateDictionary = "function",
     CompressZlibWithDict = "function",
@@ -2945,7 +2965,7 @@ end
 local runner = lu.LuaUnit.new()
 local exitCode = runner:runSuite()
 print("========================================================")
-print("LibDeflate", "Version:", LibDeflate._VERSION, "\n")
+print("LibDeflateGuard", "Version:", LibDeflate._VERSION, "\n")
 print("Exported keys:")
 for k, v in pairs(LibDeflate) do
   assert(type(k) == "string")

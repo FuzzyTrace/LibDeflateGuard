@@ -30,7 +30,7 @@ Read [dev_docs/format.md](dev_docs/format.md) for detail.
 
 ## Linting
 
-Lua code of LibDeflate should not have lint warnings.
+Lua code in LibDeflateGuard should not have lint warnings.
 
 Read [dev_docs/lint.md](dev_docs/lint.md) for detail.
 

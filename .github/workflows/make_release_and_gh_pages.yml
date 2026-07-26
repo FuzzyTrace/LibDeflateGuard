@@ -13,12 +13,12 @@ on:
 
 jobs:
   make_release_and_gh_pages:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       LUA: lua-5.1.5
       LUAROCKS: 3.7.0
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Lua and Luarocks
         run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
@@ -46,21 +46,21 @@ jobs:
           zip -9 -v -r ../docs.zip .
 
       - name: Upload generated docs as artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: docs
           path: docs.zip
 
-      - name: Create WoW release package
+      - name: Create embed-source package
         run: |
           tools/gen_packages.sh
           cp .release/*.zip ./
 
       - name: Upload package as artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: wow_release
-          path: libdeflate-*.zip
+          name: embed_source
+          path: libdeflateguard-*.zip
           if-no-files-found: error
 
       - name: Upload to github pages if any doc update

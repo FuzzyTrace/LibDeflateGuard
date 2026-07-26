@@ -12,12 +12,12 @@ on:
 
 jobs:
   lua_lint:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       LUA: lua-5.1.5
       LUAROCKS: 3.7.0
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Lua and Luarocks
         run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
