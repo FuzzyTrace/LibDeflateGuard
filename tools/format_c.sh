@@ -7,4 +7,8 @@
 set -euxo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-git ls-files -c -o --exclude-standard -z '*.c' '*.cc' '*.cpp' | xargs -0 -P 0 -t -n 1 clang-format -i
+# fields.c and puff.c are licensed upstream compatibility fixtures. Keep their
+# source form intact instead of rewriting them with the runner's clang version.
+git ls-files -c -o --exclude-standard -z '*.c' '*.cc' '*.cpp' |
+  grep -zvE '^(tests/data/3rdparty/fields\.c|tests/puff\.c)$' |
+  xargs -0 -r -P 0 -t -n 1 clang-format -i

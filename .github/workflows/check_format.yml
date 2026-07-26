@@ -59,7 +59,7 @@ jobs:
       - name: Install shfmt
         run: |
           cd
-          GO111MODULE=on go get mvdan.cc/sh/v3/cmd/shfmt@v3.2.4
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.2.4
 
       - name: Check if all sh code has been formatted
         run: |
@@ -105,8 +105,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install yapf as the python formatter
-        run: sudo python3 -m pip install yapf==0.31.0
+        run: python -m pip install yapf==0.31.0
 
       - name: Format all Python code
         run: tools/format_py.sh

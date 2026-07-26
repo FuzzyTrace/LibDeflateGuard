@@ -5,6 +5,8 @@
 
 set -euxo pipefail
 
+ZLIB_VERSION="1.3.2"
+
 ErrorHandler() {
   local exit_code="$1"
   local parent_lineno="$2"
@@ -37,8 +39,9 @@ nproc() {
 
 BuildZlib() {
   cd
-  curl --retry 10 --retry-delay 10 --location https://zlib.net/zlib-1.3.1.tar.gz | tar xz
-  cd zlib-1.3.1
+  curl --fail --retry 10 --retry-delay 10 --location \
+    "https://zlib.net/zlib-${ZLIB_VERSION}.tar.gz" | tar xz
+  cd "zlib-${ZLIB_VERSION}"
   if [[ "${platform}" == "windows" ]]; then
     make -f win32/Makefile.gcc
   else
@@ -49,7 +52,7 @@ BuildZlib() {
 
 BuildReferenceProgram() {
   cd
-  export ZLIB_PATH="$(pwd)/zlib-1.3.1"
+  export ZLIB_PATH="$(pwd)/zlib-${ZLIB_VERSION}"
   cd "${GITHUB_WORKSPACE}/tests"
   make
 }

@@ -45,8 +45,10 @@ InstallLuajit() {
   fi
   cd
   echo ">> Downloading LuaJIT-${version}"
-  curl --retry 10 --retry-delay 10 --location https://github.com/LuaJIT/LuaJIT/archive/refs/tags/v${version}.tar.gz | tar xz
-  cd "LuaJIT-${version}"
+  local source_dir="luajit2-${version}"
+  curl --fail --retry 10 --retry-delay 10 --location \
+    "https://github.com/openresty/luajit2/archive/refs/tags/v${version}.tar.gz" | tar xz
+  cd "${source_dir}"
   echo ">> Compiling LuaJIT-${version}"
   if [[ "${platform}" == "linux" ]]; then
     make HOST_SYS="$(uname -s)" PREFIX=${prefix} all -j "$(nproc)"
@@ -83,7 +85,7 @@ InstallLuajit() {
   fi
 
   cd ..
-  rm -rf "LuaJIT-${version}"
+  rm -rf "${source_dir}"
 }
 
 InstallLua() {
@@ -103,6 +105,10 @@ InstallLua() {
 
   echo ">> Compiling Lua-${version}"
   if [[ "${platform}" == "linux" ]]; then
+    if command -v apt-get >/dev/null; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y libreadline-dev
+    fi
     local plat=linux
   elif [[ "${platform}" == "mac" ]]; then
     local plat=macosx
