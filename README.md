@@ -172,6 +172,37 @@ fixed, dynamic, and multi-block vectors, malformed/truncated/trailing members,
 all resource limits, exception containment, all-byte addon-channel round trips,
 malformed escapes, zlib framing, and an RCLootCouncil compatibility fixture.
 
+The randomized decode-path suite is also dependency-free:
+
+```text
+lua tests/FuzzTest.lua
+```
+
+It drives every decoder with valid, truncated, mutated, trailing, and wrongly
+typed input, and with tight and invalid limit policies. A decoder must never
+throw and must always answer with a decoded string or a stable code from
+`ERRORS`. It also asserts two properties that hold without a reference
+implementation: anything a codec accepts must re-encode to exactly the bytes
+it was given, and a symbol budget below the RFC 1951 floor of one symbol per
+258 output bytes must always be refused.
+
+Its workload is reproducible. `LIBDEFLATEGUARD_FUZZ_SEED` selects the seed and
+`LIBDEFLATEGUARD_FUZZ_ITERATIONS` scales the iteration counts, so a longer soak
+is `LIBDEFLATEGUARD_FUZZ_ITERATIONS=50 lua tests/FuzzTest.lua`. The generator is
+a private one, not `math.random`, so a seed reproduces the same workload on
+every supported interpreter.
+
+Point `LIBDEFLATEGUARD_FUZZ_REFERENCE` at another copy of `LibDeflateGuard.lua`
+to turn the suite into a differential harness. Every public decode entry point
+must then return identical tuples from both modules, which is the check to run
+when changing the decode path:
+
+```text
+git worktree add ../guard-baseline <known-good-revision>
+LIBDEFLATEGUARD_FUZZ_REFERENCE=../guard-baseline/LibDeflateGuard.lua \
+  lua tests/FuzzTest.lua
+```
+
 The inherited upstream suite remains in `tests/Test.lua` for compressor,
 dictionary, and broad format regression testing.
 
