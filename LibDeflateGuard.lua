@@ -2172,7 +2172,12 @@ local _STATUS_SYMBOL_LIMIT = -102
 local _STATUS_WORK_LIMIT = -103
 
 local function ResolveDecompressLimits(limits)
-    if limits ~= nil and type(limits) ~= "table" then return nil end
+    if limits == nil then
+        -- The decoder only reads this table, so the private defaults can be
+        -- shared instead of copied on every call.
+        return _default_decompress_limits
+    end
+    if type(limits) ~= "table" then return nil end
 
     local resolved = {}
     for key, default_value in pairs(_default_decompress_limits) do
@@ -2251,7 +2256,7 @@ local function CreateReader(input_string)
         for _ = 1, byte_from_cache do
             local byte = cache % 256
             buffer_size = buffer_size + 1
-            buffer[buffer_size] = string_char(byte)
+            buffer[buffer_size] = _byte_to_char[byte]
             cache = (cache - byte) / 256
         end
         cache_bitlen = cache_bitlen - byte_from_cache * 8
@@ -2260,9 +2265,27 @@ local function CreateReader(input_string)
             0 then
             return -1 -- out of input
         end
-        for i = input_next_byte_pos, input_next_byte_pos + bytelen - 1 do
+        -- Loop unrolled 8 times, and reading through _byte_to_char instead of
+        -- string_sub, to speed up stored blocks.
+        local i = input_next_byte_pos
+        local last = input_next_byte_pos + bytelen - 1
+        while i + 7 <= last do
+            local c1, c2, c3, c4, c5, c6, c7, c8 = string_byte(input, i, i + 7)
+            buffer[buffer_size + 1] = _byte_to_char[c1]
+            buffer[buffer_size + 2] = _byte_to_char[c2]
+            buffer[buffer_size + 3] = _byte_to_char[c3]
+            buffer[buffer_size + 4] = _byte_to_char[c4]
+            buffer[buffer_size + 5] = _byte_to_char[c5]
+            buffer[buffer_size + 6] = _byte_to_char[c6]
+            buffer[buffer_size + 7] = _byte_to_char[c7]
+            buffer[buffer_size + 8] = _byte_to_char[c8]
+            buffer_size = buffer_size + 8
+            i = i + 8
+        end
+        while i <= last do
             buffer_size = buffer_size + 1
-            buffer[buffer_size] = string_sub(input, i, i)
+            buffer[buffer_size] = _byte_to_char[string_byte(input, i)]
+            i = i + 1
         end
 
         input_next_byte_pos = input_next_byte_pos + bytelen
@@ -2483,7 +2506,17 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
     local dictionary = state.dictionary
     local dict_string_table
     local dict_strlen
-    local budget_status
+
+    -- Budget counters are kept in locals for the whole block and written back
+    -- to "state" on exit. Failure returns are terminal, so the counters only
+    -- need to be published on the success path.
+    local limits = state.limits
+    local max_symbols = limits.max_symbols
+    local max_output_bytes = limits.max_output_bytes
+    local max_work_units = limits.max_work_units
+    local symbol_count = state.symbol_count
+    local output_size = state.output_size
+    local work_units = state.work_units
 
     local buffer_end = 1
     if dictionary and not buffer[0] then
@@ -2499,16 +2532,22 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
     end
 
     repeat
-        budget_status = ConsumeSymbols(state, 1)
-        if budget_status ~= 0 then return budget_status end
+        symbol_count = symbol_count + 1
+        work_units = work_units + 1
+        if symbol_count > max_symbols then return _STATUS_SYMBOL_LIMIT end
+        if work_units > max_work_units then return _STATUS_WORK_LIMIT end
         local symbol = Decode(lcodes_huffman_bitlens, lcodes_huffman_symbols,
                               lcodes_huffman_min_bitlen)
         if symbol < 0 or symbol > 285 then
             -- invalid literal/length or distance code in fixed or dynamic block
             return -10
         elseif symbol < 256 then -- Literal
-            budget_status = ConsumeOutput(state, 1)
-            if budget_status ~= 0 then return budget_status end
+            output_size = output_size + 1
+            work_units = work_units + 1
+            if output_size > max_output_bytes then
+                return _STATUS_OUTPUT_LIMIT
+            end
+            if work_units > max_work_units then return _STATUS_WORK_LIMIT end
             buffer_size = buffer_size + 1
             buffer[buffer_size] = _byte_to_char[symbol]
         elseif symbol > 256 then -- Length code
@@ -2519,8 +2558,10 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
                              ReadBits(
                                  _literal_deflate_code_to_extra_bitlen[symbol])) or
                          bitlen
-            budget_status = ConsumeSymbols(state, 1)
-            if budget_status ~= 0 then return budget_status end
+            symbol_count = symbol_count + 1
+            work_units = work_units + 1
+            if symbol_count > max_symbols then return _STATUS_SYMBOL_LIMIT end
+            if work_units > max_work_units then return _STATUS_WORK_LIMIT end
             symbol = Decode(dcodes_huffman_bitlens, dcodes_huffman_symbols,
                             dcodes_huffman_min_bitlen)
             if symbol < 0 or symbol > 29 then
@@ -2538,8 +2579,12 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
                 -- distance is too far back in fixed or dynamic block
                 return -11
             end
-            budget_status = ConsumeOutput(state, bitlen)
-            if budget_status ~= 0 then return budget_status end
+            output_size = output_size + bitlen
+            work_units = work_units + bitlen
+            if output_size > max_output_bytes then
+                return _STATUS_OUTPUT_LIMIT
+            end
+            if work_units > max_work_units then return _STATUS_WORK_LIMIT end
             if char_buffer_index >= -257 then
                 for _ = 1, bitlen do
                     buffer_size = buffer_size + 1
@@ -2575,6 +2620,9 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
     until symbol == 256
 
     state.buffer_size = buffer_size
+    state.symbol_count = symbol_count
+    state.output_size = output_size
+    state.work_units = work_units
 
     return 0
 end
@@ -2902,38 +2950,41 @@ local function MapDecompressStatus(status)
     return LibDeflateGuard.ERRORS.INVALID_STREAM
 end
 
+local function DecompressGuarded(internal, str, dictionary, limits,
+                                 check_dictionary)
+    if type(str) ~= "string" then
+        return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
+    end
+
+    local resolved_limits = ResolveDecompressLimits(limits)
+    if not resolved_limits then
+        return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
+    end
+    if #str > resolved_limits.max_input_bytes then
+        return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED
+    end
+
+    if check_dictionary then
+        local dictionary_valid = IsValidDictionary(dictionary)
+        if not dictionary_valid then
+            return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
+        end
+    end
+
+    local output, internal_status = internal(str, dictionary, resolved_limits)
+    if not output then return nil, MapDecompressStatus(internal_status) end
+    if internal_status ~= 0 then
+        return nil, LibDeflateGuard.ERRORS.TRAILING_DATA
+    end
+    return output, 0
+end
+
 local function DecompressSafely(internal, str, dictionary, limits,
                                 check_dictionary)
-    local ok, result, status = pcall(function()
-        if type(str) ~= "string" then
-            return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-        end
-
-        local resolved_limits = ResolveDecompressLimits(limits)
-        if not resolved_limits then
-            return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-        end
-        if #str > resolved_limits.max_input_bytes then
-            return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED
-        end
-
-        if check_dictionary then
-            local dictionary_valid = IsValidDictionary(dictionary)
-            if not dictionary_valid then
-                return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-            end
-        end
-
-        local output, internal_status = internal(str, dictionary,
-                                                 resolved_limits)
-        if not output then
-            return nil, MapDecompressStatus(internal_status)
-        end
-        if internal_status ~= 0 then
-            return nil, LibDeflateGuard.ERRORS.TRAILING_DATA
-        end
-        return output, 0
-    end)
+    -- Arguments are forwarded through pcall rather than captured by a closure,
+    -- so a guarded decode allocates no closure per call.
+    local ok, result, status = pcall(DecompressGuarded, internal, str,
+                                     dictionary, limits, check_dictionary)
 
     if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
     return result, status
@@ -3226,6 +3277,19 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
     local decode_tblsize = #decode_patterns
     local decode_fail_pattern = "([" .. escape_for_gsub(reserved_chars) .. "])"
 
+    -- Byte-keyed mirror of "escape_suffixes" plus a character class that jumps
+    -- straight to the next escape byte, so the canonical-escape check does not
+    -- allocate a one-character string for every byte of the input.
+    local escape_suffix_bytes = {}
+    for escape_c, suffixes in pairs(escape_suffixes) do
+        local by_byte = {}
+        for suffix_c in pairs(suffixes) do
+            by_byte[string_byte(suffix_c)] = true
+        end
+        escape_suffix_bytes[string_byte(escape_c)] = by_byte
+    end
+    local escape_scan_pattern = "[" .. escape_for_gsub(escape_chars) .. "]"
+
     function codec:Decode(str)
         if type(str) ~= "string" then
             return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
@@ -3234,18 +3298,15 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
             return nil, LibDeflateGuard.ERRORS.INVALID_ESCAPE
         end
         local index = 1
-        while index <= #str do
-            local char = string_sub(str, index, index)
-            local valid_suffixes = escape_suffixes[char]
-            if valid_suffixes then
-                local suffix = string_sub(str, index + 1, index + 1)
-                if suffix == "" or not valid_suffixes[suffix] then
-                    return nil, LibDeflateGuard.ERRORS.INVALID_ESCAPE
-                end
-                index = index + 2
-            else
-                index = index + 1
+        while true do
+            local pos = string_find(str, escape_scan_pattern, index)
+            if not pos then break end
+            local suffix = string_byte(str, pos + 1)
+            if not suffix or
+                not escape_suffix_bytes[string_byte(str, pos)][suffix] then
+                return nil, LibDeflateGuard.ERRORS.INVALID_ESCAPE
             end
+            index = pos + 2
         end
         for i = 1, decode_tblsize do
             str = string_gsub(str, decode_patterns[i], decode_repls[i])
@@ -3287,12 +3348,11 @@ function LibDeflateGuard:DecodeForWoWAddonChannel(str)
     if type(str) ~= "string" then
         return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
     end
-    local ok, result, status = pcall(function()
-        if not _addon_channel_codec then
-            _addon_channel_codec = GenerateWoWAddonChannelCodec()
-        end
-        return _addon_channel_codec:Decode(str)
-    end)
+    if not _addon_channel_codec then
+        _addon_channel_codec = GenerateWoWAddonChannelCodec()
+    end
+    local codec = _addon_channel_codec
+    local ok, result, status = pcall(codec.Decode, codec, str)
     if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
     return result, status
 end
@@ -3354,12 +3414,11 @@ function LibDeflateGuard:DecodeForWoWChatChannel(str)
     if type(str) ~= "string" then
         return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
     end
-    local ok, result, status = pcall(function()
-        if not _chat_channel_codec then
-            _chat_channel_codec = GenerateWoWChatChannelCodec()
-        end
-        return _chat_channel_codec:Decode(str)
-    end)
+    if not _chat_channel_codec then
+        _chat_channel_codec = GenerateWoWChatChannelCodec()
+    end
+    local codec = _chat_channel_codec
+    local ok, result, status = pcall(codec.Decode, codec, str)
     if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
     return result, status
 end

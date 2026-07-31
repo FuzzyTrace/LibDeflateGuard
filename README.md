@@ -120,6 +120,13 @@ member followed by one or more complete bytes fails with `trailing_data`.
 Unused padding bits in the final raw Deflate byte remain valid RFC 1951
 padding.
 
+`max_output_bytes` bounds the decoded string, not the Lua heap. Peak heap
+during a decode measures roughly 3 to 4 times the decoded size, because the
+flushed output chunks, the final concatenated string, and the 32768-byte
+sliding window are all live at the same time. Size the policy against that
+multiplier: the default 8 MiB output cap implies a transient peak of roughly
+26 to 32 MiB.
+
 ## Compression and codecs
 
 The original compressor and dictionary APIs remain available:
