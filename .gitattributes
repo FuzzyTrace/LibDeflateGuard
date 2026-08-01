@@ -1,0 +1,4 @@
+# dev_docs/format.md requires LF line endings. Without this, a checkout with
+# core.autocrlf=true gives the shell scripts CRLF endings, and every script in
+# tools/ then dies with "$'\r': command not found" before it runs anything.
+*.sh text eol=lf

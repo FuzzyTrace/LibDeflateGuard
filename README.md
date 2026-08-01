@@ -120,6 +120,13 @@ member followed by one or more complete bytes fails with `trailing_data`.
 Unused padding bits in the final raw Deflate byte remain valid RFC 1951
 padding.
 
+`max_output_bytes` bounds the decoded string, not the Lua heap. Peak heap
+during a decode measures roughly 3 to 4 times the decoded size, because the
+flushed output chunks, the final concatenated string, and the 32768-byte
+sliding window are all live at the same time. Size the policy against that
+multiplier: the default 8 MiB output cap implies a transient peak of roughly
+26 to 32 MiB.
+
 ## Compression and codecs
 
 The original compressor and dictionary APIs remain available:
@@ -171,6 +178,37 @@ It covers stock LibDeflate/LibStub isolation, private addon export, stored,
 fixed, dynamic, and multi-block vectors, malformed/truncated/trailing members,
 all resource limits, exception containment, all-byte addon-channel round trips,
 malformed escapes, zlib framing, and an RCLootCouncil compatibility fixture.
+
+The randomized decode-path suite is also dependency-free:
+
+```text
+lua tests/FuzzTest.lua
+```
+
+It drives every decoder with valid, truncated, mutated, trailing, and wrongly
+typed input, and with tight and invalid limit policies. A decoder must never
+throw and must always answer with a decoded string or a stable code from
+`ERRORS`. It also asserts two properties that hold without a reference
+implementation: anything a codec accepts must re-encode to exactly the bytes
+it was given, and a symbol budget below the RFC 1951 floor of one symbol per
+258 output bytes must always be refused.
+
+Its workload is reproducible. `LIBDEFLATEGUARD_FUZZ_SEED` selects the seed and
+`LIBDEFLATEGUARD_FUZZ_ITERATIONS` scales the iteration counts, so a longer soak
+is `LIBDEFLATEGUARD_FUZZ_ITERATIONS=50 lua tests/FuzzTest.lua`. The generator is
+a private one, not `math.random`, so a seed reproduces the same workload on
+every supported interpreter.
+
+Point `LIBDEFLATEGUARD_FUZZ_REFERENCE` at another copy of `LibDeflateGuard.lua`
+to turn the suite into a differential harness. Every public decode entry point
+must then return identical tuples from both modules, which is the check to run
+when changing the decode path:
+
+```text
+git worktree add ../guard-baseline <known-good-revision>
+LIBDEFLATEGUARD_FUZZ_REFERENCE=../guard-baseline/LibDeflateGuard.lua \
+  lua tests/FuzzTest.lua
+```
 
 The inherited upstream suite remains in `tests/Test.lua` for compressor,
 dictionary, and broad format regression testing.

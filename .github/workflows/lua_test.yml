@@ -56,6 +56,11 @@ jobs:
           . .github/workflows/script/setenv_lua.ps1
           lua tests/GuardTest.lua
 
+      - name: Run randomized decode-path tests
+        run: |
+          . .github/workflows/script/setenv_lua.ps1
+          lua tests/FuzzTest.lua
+
       - name: Install luaunit
         run: |
           . .github/workflows/script/setenv_lua.ps1
@@ -105,6 +110,12 @@ jobs:
           set -exuo pipefail
           source .github/workflows/script/setenv_lua.sh
           lua tests/GuardTest.lua
+
+      - name: Run randomized decode-path tests
+        run: |
+          set -exuo pipefail
+          source .github/workflows/script/setenv_lua.sh
+          lua tests/FuzzTest.lua
 
       - name: Install luaunit
         run: |

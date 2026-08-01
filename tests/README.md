@@ -54,6 +54,20 @@ You can use LuaJIT or the original Lua interpreter. I prefer LuaJIT during devel
 
    `luajit tests/Test.lua --verbose --shuffle`
 
+   The two guard suites need no external dependencies and no reference
+   compressor, so they also run on a bare checkout:
+
+   `luajit tests/GuardTest.lua`
+   `luajit tests/FuzzTest.lua`
+
+   [FuzzTest.lua](FuzzTest.lua) is randomized but reproducible. Set
+   `LIBDEFLATEGUARD_FUZZ_SEED` to change the seed,
+   `LIBDEFLATEGUARD_FUZZ_ITERATIONS` to scale the workload, and
+   `LIBDEFLATEGUARD_FUZZ_REFERENCE` to the path of another copy of
+   LibDeflateGuard.lua to compare the two modules call for call. Use that
+   differential mode against the last released revision whenever the decode
+   path or a codec changes.
+
 2. Run complete code coverage test:
 
    First delete the file _luacov.stats.out_, if exists.

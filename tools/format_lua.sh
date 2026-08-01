@@ -7,4 +7,9 @@
 set -euxo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-git ls-files -c -o --exclude-standard -z '*.lua' | xargs -0 -P 0 -t -n 1 -I {} bash -c 'if [[ -e "{}" ]]; then lua-format -i -v; fi'
+# LibCompress is vendored third-party code. Keep its source form intact rather
+# than rewriting it with our formatter. .luacheckrc excludes it from linting for
+# the same reason.
+git ls-files -c -o --exclude-standard -z '*.lua' |
+  grep -zvE '^tests/LibCompress/' |
+  xargs -0 -r -P 0 -t -n 1 -I {} bash -c 'if [[ -e "{}" ]]; then lua-format -i "{}"; fi'
