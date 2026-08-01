@@ -114,20 +114,46 @@ LibDeflateGuard.ERRORS = {
   INTERNAL_ERROR = "internal_error"
 }
 
-local _default_decompress_limits = {
+-- The "addon" preset is the default. It is sized for a game client, where a
+-- decode runs on the frame thread and a rejected message must not be felt.
+-- The "generous" preset is the pre-1.1 default, sized for a server or a
+-- desktop tool that can afford a longer stall.
+--
+-- These are per-call budgets. Bounding a stream of messages needs the
+-- caller's transport context and remains the caller's job.
+local _addon_decompress_limits = {
+  max_input_bytes = 64 * 1024,
+  max_output_bytes = 512 * 1024,
+  max_blocks = 256,
+  max_symbols = 750000,
+  max_work_units = 1500000
+}
+local _generous_decompress_limits = {
   max_input_bytes = 1024 * 1024,
   max_output_bytes = 8 * 1024 * 1024,
   max_blocks = 4096,
   max_symbols = 10000000,
   max_work_units = 25000000
 }
-LibDeflateGuard.DEFAULT_LIMITS = {
-  max_input_bytes = _default_decompress_limits.max_input_bytes,
-  max_output_bytes = _default_decompress_limits.max_output_bytes,
-  max_blocks = _default_decompress_limits.max_blocks,
-  max_symbols = _default_decompress_limits.max_symbols,
-  max_work_units = _default_decompress_limits.max_work_units
+local _default_decompress_limits = _addon_decompress_limits
+
+local function CopyLimits(limits)
+  return {
+    max_input_bytes = limits.max_input_bytes,
+    max_output_bytes = limits.max_output_bytes,
+    max_blocks = limits.max_blocks,
+    max_symbols = limits.max_symbols,
+    max_work_units = limits.max_work_units
+  }
+end
+
+-- Inspection copies. Mutating them does not alter the private tables the
+-- decoder enforces.
+LibDeflateGuard.LIMIT_PRESETS = {
+  addon = CopyLimits(_addon_decompress_limits),
+  generous = CopyLimits(_generous_decompress_limits)
 }
+LibDeflateGuard.DEFAULT_LIMITS = CopyLimits(_default_decompress_limits)
 
 -- A codec decode exists to feed a decompress, so its cap is derived from the
 -- decompress input cap rather than guessed. The print codec emits 0.75 bytes

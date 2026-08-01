@@ -299,6 +299,30 @@ Test("print decoder returns stable non-throwing errors", function()
   end
 end)
 
+Test("limit presets", function()
+  for key, value in pairs(Guard.LIMIT_PRESETS.addon) do
+    AssertEqual(Guard.DEFAULT_LIMITS[key], value,
+                "default matches addon: " .. key)
+  end
+  assert(Guard.LIMIT_PRESETS.generous.max_output_bytes >
+           Guard.LIMIT_PRESETS.addon.max_output_bytes,
+         "generous must be looser than addon")
+
+  -- Both presets must be accepted verbatim as a policy.
+  local fixed = FromHex("330400")
+  for name, preset in pairs(Guard.LIMIT_PRESETS) do
+    AssertEqual(Guard:DecompressDeflate(fixed, preset), "1",
+                "preset is a usable policy: " .. name)
+  end
+
+  -- The exported tables are inspection copies, not the enforced ones.
+  local restore = Guard.LIMIT_PRESETS.addon.max_input_bytes
+  Guard.LIMIT_PRESETS.addon.max_input_bytes = 1
+  AssertEqual(Guard:DecompressDeflate(fixed), "1",
+              "preset table cannot weaken policy")
+  Guard.LIMIT_PRESETS.addon.max_input_bytes = restore
+end)
+
 Test("codec decoders cap their input", function()
   local channel_cap = Guard.DEFAULT_CODEC_LIMITS.channel_max_input_bytes
   local print_cap = Guard.DEFAULT_CODEC_LIMITS.print_max_input_bytes
