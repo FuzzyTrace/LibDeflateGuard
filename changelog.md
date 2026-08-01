@@ -1,3 +1,29 @@
+### Unreleased
+
+- Reduced decode-path overhead. Raw Deflate decoding is about 10 per cent
+  faster and zlib about 13 per cent, stored blocks about a third faster, and
+  World of Warcraft addon-channel decoding about twice as fast. A sweep of many
+  small messages also allocates far less, because a guarded decode no longer
+  builds a closure and a limits table on every call.
+- No decoder behaviour change. Every limit, error code, and accepted or
+  rejected input is the same. The optimised decoder was compared against the
+  previous one over hundreds of thousands of calls with no divergence.
+- Documented that `max_output_bytes` bounds the decoded string and not the Lua
+  heap, which peaks at roughly three to four times the decoded size. The
+  default 8 MiB output cap therefore implies a transient peak nearer 26 to
+  32 MiB.
+- Added `tests/FuzzTest.lua`, a randomized decode-path suite with
+  exact-boundary coverage for every resource limit across stored, fixed, and
+  dynamic blocks, and an optional differential mode that compares two copies of
+  the library call for call.
+- Fixed `tools/format_lua.sh`, which never passed a filename to the formatter,
+  so the Lua formatting check had never inspected anything. Formatted the Lua
+  sources to the repository's own configuration and excluded the vendored
+  LibCompress copy from formatting.
+- Added `.gitattributes` so shell scripts keep LF line endings. Every script in
+  `tools/` failed immediately on a Windows checkout before this.
+- Documented the local validation toolchain in `dev_docs/toolchain.md`.
+
 ### LibDeflateGuard v1.0.0
 
 - Established the independently maintained `LibDeflateGuard` module identity
