@@ -3278,6 +3278,11 @@ function LibDeflateGuard:DecodeForWoWAddonChannel(str)
     _addon_channel_codec = GenerateWoWAddonChannelCodec()
   end
   local codec = _addon_channel_codec
+  -- Indexing codec.Decode happens before pcall is entered, so guard the
+  -- codec itself. This decoder's contract is that it never throws.
+  if type(codec) ~= "table" or type(codec.Decode) ~= "function" then
+    return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR
+  end
   local ok, result, status = pcall(codec.Decode, codec, str)
   if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
   return result, status
@@ -3344,6 +3349,11 @@ function LibDeflateGuard:DecodeForWoWChatChannel(str)
     _chat_channel_codec = GenerateWoWChatChannelCodec()
   end
   local codec = _chat_channel_codec
+  -- Indexing codec.Decode happens before pcall is entered, so guard the
+  -- codec itself. This decoder's contract is that it never throws.
+  if type(codec) ~= "table" or type(codec.Decode) ~= "function" then
+    return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR
+  end
   local ok, result, status = pcall(codec.Decode, codec, str)
   if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
   return result, status

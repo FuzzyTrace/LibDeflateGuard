@@ -45,13 +45,35 @@ end
 local seed = tonumber(os.getenv("LIBDEFLATEGUARD_FUZZ_SEED") or "") or 1234
 local scale = tonumber(os.getenv("LIBDEFLATEGUARD_FUZZ_ITERATIONS") or "") or 1
 
--- A private linear congruential generator, so a seed reproduces the same
--- workload on every Lua version. math.random is not portable across 5.1-5.4.
-local rng_state = seed % 2147483648
+-- A private generator, because math.random is not portable across 5.1-5.4.
+--
+-- This is MINSTD: state = state * 16807 % (2^31 - 1). The multiplier matters.
+-- Lua 5.1 and LuaJIT do this arithmetic in doubles while 5.3 and 5.4 use
+-- 64-bit integers, so any intermediate above 2^53 rounds on the former and
+-- not on the latter, and the two would silently diverge. MINSTD peaks near
+-- 2^45, which is exact in both. AssertGeneratorIsPortable below pins it.
+local rng_state = seed % 2147483647
+if rng_state == 0 then rng_state = 1 end -- 0 is MINSTD's fixed point
 local function Random(upper)
-  rng_state = (rng_state * 1103515245 + 12345) % 2147483648
-  local value = (rng_state - rng_state % 65536) / 65536
-  return value % upper
+  rng_state = rng_state * 16807 % 2147483647
+  -- math.floor keeps this an integer on 5.3+, where "/" yields a float.
+  return math.floor(rng_state / 2147483647 * upper)
+end
+
+-- The generator is only useful if a seed means the same thing everywhere, so
+-- check it rather than trusting the reasoning above. These values were taken
+-- from Lua 5.1, and 5.2, 5.3, 5.4 and LuaJIT must agree with them.
+local function AssertGeneratorIsPortable()
+  local saved = rng_state
+  rng_state = 1234
+  local expected = {19, 635, 833, 1948, 869, 391, 106, 1438, 503, 822}
+  for index = 1, #expected do
+    local drawn = Random(2000)
+    assert(drawn == expected[index],
+           ("generator is not portable on %s: draw %d gave %s, expected %d"):format(
+             _VERSION, index, tostring(drawn), expected[index]))
+  end
+  rng_state = saved
 end
 
 -- Random integer in [lower, upper].
@@ -73,12 +95,24 @@ local function AssertStableFailure(output, code, context)
          context .. ": unstable error code " .. tostring(code))
 end
 
--- Every decode answer must be either (string, 0) or (nil, stable code).
-local function AssertDecodeContract(output, code, context)
+-- Every decode answer must be a decoded string or nil plus a stable code.
+-- The two families differ on success: the decompressors document a numeric
+-- status 0 alongside the output, while the codec decoders return the string
+-- on its own. Both must never pair output with an error code.
+local function AssertDecodeContract(output, code, context, status_is_zero)
   if output == nil then
     AssertStableFailure(output, code, context)
   else
     assert(type(output) == "string", context .. ": output must be a string")
+    assert(not error_codes[code],
+           context .. ": success reported error code " .. tostring(code))
+    if status_is_zero then
+      assert(code == 0, context .. ": success must report status 0, got " ..
+               tostring(code))
+    else
+      assert(code == nil, context .. ": success must report no status, got " ..
+               tostring(code))
+    end
   end
 end
 
@@ -114,7 +148,8 @@ end
 -- checks the decode contract and that both modules agree.
 local function Decode(method, context, ...)
   local actual = Pack(Guard[method](Guard, ...))
-  AssertDecodeContract(actual[1], actual[2], context)
+  AssertDecodeContract(actual[1], actual[2], context,
+                       method:sub(1, 10) == "Decompress")
   if Reference then
     CompareToReference(context, actual, Pack(Reference[method](Reference, ...)))
   end
@@ -150,6 +185,38 @@ local function Mutate(str)
   return str:sub(1, index - 1) .. string.char(Random(256)) .. str:sub(index + 1)
 end
 
+-- Build a raw DEFLATE stream of fixed-Huffman blocks, each holding "literals"
+-- copies of "A". The compressor never emits this shape, because it prefers
+-- dynamic blocks, and a dynamic block charges the symbol budget through its
+-- code-length header as well as through the literal loop. A fixed block has no
+-- header, so this is the only shape where the literal loop is the sole thing
+-- charging that budget, and therefore the only one that can prove the
+-- per-block symbol counter carries into the stream total.
+local function BuildFixedBlockStream(blocks, literals)
+  local out, acc, nbits = {}, 0, 0
+  local function PutBits(value, count) -- RFC 1951 packs bits low end first
+    acc = acc + value * 2 ^ nbits
+    nbits = nbits + count
+    while nbits >= 8 do
+      out[#out + 1] = string.char(acc % 256)
+      acc = math.floor(acc / 256)
+      nbits = nbits - 8
+    end
+  end
+  local function PutCode(code, count) -- Huffman codes go high bit first
+    for i = count - 1, 0, -1 do PutBits(math.floor(code / 2 ^ i) % 2, 1) end
+  end
+  for block = 1, blocks do
+    PutBits(block == blocks and 1 or 0, 1) -- BFINAL
+    PutBits(1, 2) -- BTYPE 01, fixed Huffman
+    -- Literal "A" is 65, and fixed codes 0-143 are 8 bits at 0x30 + literal.
+    for _ = 1, literals do PutCode(0x30 + 65, 8) end
+    PutCode(0, 7) -- end of block, symbol 256, is seven zero bits
+  end
+  if nbits > 0 then out[#out + 1] = string.char(acc % 256) end
+  return table.concat(out)
+end
+
 local deflate_case = {
   name = "deflate",
   Compress = "CompressDeflate",
@@ -164,6 +231,9 @@ local zlib_case = {
   CompressWithDict = "CompressZlibWithDict",
   DecompressWithDict = "DecompressZlibWithDict"
 }
+
+Test("the workload generator is identical on every interpreter",
+     function() AssertGeneratorIsPortable() end)
 
 Test("round trips survive every compression level and payload shape", function()
   for iteration = 1, Scaled(120) do
@@ -252,6 +322,19 @@ Test("limit policies are enforced and reported", function()
     local baseline = Decode(deflate_case.Decompress, "default policy",
                             compressed)
     assert(baseline[1] == payload, "default policy must decode the payload")
+
+    -- Omitting the policy shares one private defaults table rather than
+    -- copying it, so nothing may write through it. If it ever drifted, the
+    -- no-policy path would stop agreeing with an explicit copy of the same
+    -- numbers, and every caller in the process would silently inherit it.
+    local explicit = {}
+    for key, value in pairs(Guard.DEFAULT_LIMITS) do explicit[key] = value end
+    local shared =
+      Decode(deflate_case.Decompress, "shared defaults", compressed)
+    local copied = Decode(deflate_case.Decompress, "copied defaults",
+                          compressed, explicit)
+    assert(shared[1] == copied[1] and shared[2] == copied[2],
+           "omitting the policy must match an explicit copy of the defaults")
   end
 end)
 
@@ -308,6 +391,56 @@ Test("every budget fires when it is set below what the member needs", function()
   assert(result[2] == Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
          "the symbol floor must report symbol_limit_exceeded")
 
+  -- The same accumulation argument for the other two per-symbol budgets. The
+  -- decoder keeps these counters in locals for the length of a block and
+  -- publishes them to the state on the way out, so a member split across
+  -- several blocks is the only shape that can catch a counter that fails to
+  -- carry from one block into the next. A cap set between the largest single
+  -- block and the whole member must still be refused.
+  local carry_floors = {
+    {
+      {max_output_bytes = math.floor(#spread / 2)},
+      Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED
+    },
+    {
+      {max_work_units = math.floor(#spread / 2)},
+      Guard.ERRORS.WORK_LIMIT_EXCEEDED
+    }
+  }
+  for _, floor in ipairs(carry_floors) do
+    local policy, expected = floor[1], floor[2]
+    local key = next(policy)
+    result = Decode(deflate_case.Decompress, key .. " carries across blocks",
+                    multiblock, policy)
+    assert(result[1] == nil,
+           key .. " must carry across blocks and refuse the member")
+    assert(result[2] == expected, ("%s must report %s, got %s"):format(key,
+                                                                       expected,
+                                                                       tostring(
+                                                                         result[2])))
+  end
+
+  -- Symbols, on a shape the compressor cannot produce. Eight fixed blocks of
+  -- 4000 literals each is 8 * (4000 + 1 end-of-block) = 32008 symbols, so the
+  -- boundary is exact and a counter that resets per block shows up at once.
+  local fixed_blocks = BuildFixedBlockStream(8, 4000)
+  local decoded = Decode(deflate_case.Decompress, "fixed block stream",
+                         fixed_blocks)
+  assert(decoded[1] == string.rep("A", 32000),
+         "the hand-built fixed-block stream must decode to its literals")
+
+  result = Decode(deflate_case.Decompress, "symbols carry across blocks",
+                  fixed_blocks, {max_symbols = 32007})
+  assert(result[1] == nil,
+         "max_symbols must carry across fixed blocks and refuse the member")
+  assert(result[2] == Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+         "the fixed-block symbol total must report symbol_limit_exceeded")
+
+  result = Decode(deflate_case.Decompress, "symbols exactly sufficient",
+                  fixed_blocks, {max_symbols = 32008})
+  assert(result[1] == string.rep("A", 32000),
+         "a budget of exactly the symbol total must be accepted")
+
   -- The same member must decode once the budgets are lifted.
   local ok = Decode(deflate_case.Decompress, "lifted budgets", member)
   assert(ok[1] == payload, "the member must decode under the defaults")
@@ -336,7 +469,7 @@ Test("invalid policies and argument types are refused, not raised", function()
   local result = Decode(deflate_case.Decompress, "empty policy", sample, {})
   assert(result[1] ~= nil, "an empty policy table must use the defaults")
 
-  for _, bad in ipairs({42, true, {}, sample and print}) do
+  for _, bad in ipairs({42, true, {}, print}) do
     for _, method in ipairs({
       "DecompressDeflate", "DecompressZlib", "DecodeForPrint",
       "DecodeForWoWAddonChannel", "DecodeForWoWChatChannel"
@@ -481,7 +614,8 @@ Test("dictionary decoding round trips and refuses mismatches", function()
   -- the two modules, so the reference call is built by hand.
   local function DecodeWithDict(method, context, member)
     local actual = Pack(Guard[method](Guard, member, dictionary))
-    AssertDecodeContract(actual[1], actual[2], context)
+    -- Both dictionary entry points are Decompress*, so status 0 on success.
+    AssertDecodeContract(actual[1], actual[2], context, true)
     if Reference then
       CompareToReference(context, actual, Pack(
                            Reference[method](Reference, member,
