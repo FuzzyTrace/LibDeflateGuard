@@ -7,4 +7,4 @@
 set -euxo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-git ls-files -c -o --exclude-standard -z '*.lua' | xargs -0 -P 0 -t -n 1 -I {} bash -c 'if [[ -e "{}" ]]; then lua-format -i -v; fi'
+git ls-files -c -o --exclude-standard -z '*.lua' | xargs -0 -P 0 -t -n 1 -I {} bash -c 'if [[ -e "{}" ]]; then lua-format -i "{}"; fi'
