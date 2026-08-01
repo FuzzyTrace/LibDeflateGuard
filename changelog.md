@@ -1,4 +1,4 @@
-### Unreleased
+### LibDeflateGuard v1.0.1
 
 - Reduced decode-path overhead. Raw Deflate decoding is about 10 per cent
   faster and zlib about 13 per cent, stored blocks about a third faster, and
