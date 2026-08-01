@@ -21,8 +21,10 @@ preserved.
   namespace.
 - Deflate and zlib decoders enforce compressed-input, output, block, Huffman
   symbol, and deterministic work-unit limits.
-- Decoder and channel-decode failures return stable symbolic error codes. They
-  do not throw for malformed or wrongly typed untrusted input.
+- Codec decoders enforce their own input cap, because they run before any
+  decompression budget applies.
+- Decoder and channel-decode failures return stable symbolic error codes,
+  including for malformed or wrongly typed untrusted input.
 - Raw Deflate and zlib members reject complete trailing bytes.
 - World of Warcraft addon-channel decoding rejects dangling, unknown, and
   otherwise non-canonical escape sequences.
@@ -81,34 +83,43 @@ data, truncation, invalid streams, checksum or dictionary failures, invalid
 codec input, and contained internal exceptions.
 
 All limits are positive integer byte or work counts. Omitted keys use the
-defaults:
+defaults. Two presets ship with the library:
 
 ```lua
-LibDeflateGuard.DEFAULT_LIMITS = {
-  max_input_bytes = 1024 * 1024,
-  max_output_bytes = 8 * 1024 * 1024,
-  max_blocks = 4096,
-  max_symbols = 10000000,
-  max_work_units = 25000000,
+LibDeflateGuard.LIMIT_PRESETS = {
+  addon = {                      -- the default
+    max_input_bytes = 64 * 1024,
+    max_output_bytes = 512 * 1024,
+    max_blocks = 256,
+    max_symbols = 750000,
+    max_work_units = 1500000,
+  },
+  generous = {
+    max_input_bytes = 1024 * 1024,
+    max_output_bytes = 8 * 1024 * 1024,
+    max_blocks = 4096,
+    max_symbols = 10000000,
+    max_work_units = 25000000,
+  },
 }
 ```
 
-`DEFAULT_LIMITS` is an inspection copy. Mutating it does not alter the private
-defaults enforced by the decoder.
-
-Example policy override:
+`addon` is the default because a decode on a game client runs on the frame
+thread, where a rejected message must not be felt. `generous` is for a server
+or desktop tool that can afford a longer stall:
 
 ```lua
-local limits = {
-  max_input_bytes = 64 * 1024,
-  max_output_bytes = 512 * 1024,
-  max_blocks = 256,
-  max_symbols = 750000,
-  max_work_units = 1500000,
-}
 local output, decode_error =
-  LibDeflateGuard:DecompressDeflate(compressed, limits)
+  LibDeflateGuard:DecompressDeflate(compressed,
+                                    LibDeflateGuard.LIMIT_PRESETS.generous)
 ```
+
+A caller can also supply any table of its own; omitted keys fall back to the
+`addon` values. `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies.
+Mutating them does not alter the private defaults enforced by the decoder.
+
+These are per-call budgets. Bounding a *stream* of messages needs the caller's
+transport context and remains the caller's job.
 
 `max_symbols` counts every Huffman decode attempt, including dynamic-header,
 literal/length, distance, and end-of-block symbols. `max_work_units` counts
@@ -124,8 +135,8 @@ padding.
 during a decode measures roughly 3 to 4 times the decoded size, because the
 flushed output chunks, the final concatenated string, and the 32768-byte
 sliding window are all live at the same time. Size the policy against that
-multiplier: the default 8 MiB output cap implies a transient peak of roughly
-26 to 32 MiB.
+multiplier: the default 512 KiB output cap implies a transient peak of roughly
+1.5 to 2 MiB, and the `generous` 8 MiB cap implies roughly 26 to 32 MiB.
 
 ## Compression and codecs
 
@@ -152,6 +163,31 @@ in a final print-codec group are rejected as `invalid_print`. Decode methods
 return `nil, error_code` on invalid untrusted input. Encode methods remain
 programmer-facing and retain the original argument-error behavior.
 
+Every decode method takes an optional input cap as its last argument:
+
+```lua
+local compressed, decode_error = LibDeflateGuard:DecodeForPrint(pasted, 65536)
+```
+
+A codec decode runs before any decompression budget applies, so it carries its
+own cap rather than inheriting one. The decode is linear, so an oversized input
+is a stall rather than an amplification, but it is still unbounded work on
+attacker-supplied bytes. The defaults are derived from the decompress input
+cap rather than guessed, and are exposed for inspection:
+
+```lua
+LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
+  print_max_input_bytes = 87381,    -- 4/3 * max_input_bytes
+  channel_max_input_bytes = 65536,  -- max_input_bytes
+}
+```
+
+The print codec emits 0.75 bytes per input byte, so anything above 4/3 of
+`max_input_bytes` cannot produce a member that a default-limits decompress
+would accept. The channel codecs never grow their input, so their cap is
+`max_input_bytes` itself. A caller that raises `max_input_bytes` must raise
+these to match.
+
 ## Security scope
 
 This release bounds single-call decoding. It does not:
@@ -165,6 +201,16 @@ This release bounds single-call decoding. It does not:
 The compressed input must already fit in a Lua string before the decoder can
 check its size. Callers should also enforce transport-level message limits.
 
+The resource limits are the part of this fork that closes a reachable
+vulnerability. The non-throwing contract is a different kind of change and is
+worth describing accurately: upstream LibDeflate already returns `nil` rather
+than raising for malformed *string* input, and a 40000-case differential fuzz
+across every decode entry point produced no upstream throw. What this fork adds
+there is a stable machine-readable reason for each failure, uniform handling of
+wrongly typed arguments, and structural containment so a future decode-path
+change cannot reintroduce a raise. That is an API contract and defense in
+depth, not a patched upstream defect.
+
 ## Validation
 
 The focused guard suite has no external dependencies:
@@ -176,8 +222,16 @@ luajit tests/GuardTest.lua
 
 It covers stock LibDeflate/LibStub isolation, private addon export, stored,
 fixed, dynamic, and multi-block vectors, malformed/truncated/trailing members,
-all resource limits, exception containment, all-byte addon-channel round trips,
-malformed escapes, zlib framing, and an RCLootCouncil compatibility fixture.
+all resource limits, limit presets, codec input caps, exception containment,
+all-byte addon-channel round trips, malformed escapes, zlib framing, and an
+RCLootCouncil compatibility fixture.
+
+It also carries two adversarial vectors that a mutation fuzzer cannot reach,
+because both are well-formed RFC 1951 rather than corrupted: a maximum
+amplification match bomb, and a dynamic-header flood that produces zero output
+while forcing a Huffman table build per block. Both assert exact budget
+boundaries rather than wall-clock bounds, so an optimisation that stops
+charging for a step fails deterministically on every interpreter.
 
 The randomized decode-path suite is also dependency-free:
 
