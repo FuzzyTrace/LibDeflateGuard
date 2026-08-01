@@ -225,6 +225,65 @@ local function BuildFixedBlockStream(blocks, literals)
   return table.concat(out)
 end
 
+-- The code-length code lengths travel in this order. RFC 1951 section 3.2.7.
+local RLE_ORDER = {
+  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+}
+
+-- Build a raw DEFLATE stream of DYNAMIC-Huffman blocks. A dynamic block also
+-- charges the symbol and work budgets from its code-length header, through a
+-- different call site than the literal loop, and a fixed block cannot reach
+-- that code at all. So this shape is what covers the header accounting.
+--
+-- The header is built as small as it can legally be, which is what makes the
+-- totals hand-computable: nlen 257, ndist 1, ncode 18. Only literal 65 ("A")
+-- and 256 (end of block) get a length, both 1 bit, so the literal code is one
+-- bit per symbol. The 258 code lengths run 65 zeros, a one, 190 zeros, a one
+-- and a single trailing zero, which is six run-length symbols.
+local function BuildDynamicBlockStream(blocks, literals)
+  local out, acc, nbits = {}, 0, 0
+  local function PutBits(value, count)
+    acc = acc + value * 2 ^ nbits
+    nbits = nbits + count
+    while nbits >= 8 do
+      out[#out + 1] = string.char(acc % 256)
+      acc = math.floor(acc / 256)
+      nbits = nbits - 8
+    end
+  end
+  local function PutCode(code, count)
+    for i = count - 1, 0, -1 do PutBits(math.floor(code / 2 ^ i) % 2, 1) end
+  end
+
+  for block = 1, blocks do
+    PutBits(block == blocks and 1 or 0, 1) -- BFINAL
+    PutBits(2, 2) -- BTYPE 10, dynamic Huffman
+    PutBits(0, 5) -- HLIT, nlen = 257
+    PutBits(0, 5) -- HDIST, ndist = 1
+    PutBits(14, 4) -- HCLEN, ncode = 18
+
+    -- Code-length code: symbol 18 is one bit, symbols 0 and 1 are two.
+    -- Canonically that is 18 -> "0", 0 -> "10", 1 -> "11".
+    local code_lengths = {[18] = 1, [0] = 2, [1] = 2}
+    for i = 1, 18 do PutBits(code_lengths[RLE_ORDER[i]] or 0, 3) end
+
+    PutCode(0, 1)
+    PutBits(65 - 11, 7) -- 18: 65 zeros
+    PutCode(3, 2) -- length 1 for literal 65
+    PutCode(0, 1)
+    PutBits(138 - 11, 7) -- 18: 138 zeros
+    PutCode(0, 1)
+    PutBits(52 - 11, 7) -- 18: 52 zeros
+    PutCode(3, 2) -- length 1 for symbol 256
+    PutCode(2, 2) -- length 0 for the one distance code
+
+    for _ = 1, literals do PutCode(0, 1) end -- literal 65 is the bit 0
+    PutCode(1, 1) -- end of block is the bit 1
+  end
+  if nbits > 0 then out[#out + 1] = string.char(acc % 256) end
+  return table.concat(out)
+end
+
 local deflate_case = {
   name = "deflate",
   Compress = "CompressDeflate",
@@ -440,6 +499,52 @@ Test("every budget fires when it is set below what the member needs", function()
     assert(result[1] == fixed_output,
            ("%s = %d is exactly the total and must be accepted"):format(key,
                                                                         needed))
+  end
+
+  -- The dynamic-block header, which a fixed block cannot reach. Per block the
+  -- decoder charges ncode + nlen + ndist = 18 + 257 + 1 = 276 work for the
+  -- header, one symbol for each of the six run-length codes, one symbol per
+  -- literal plus the end of block, one output byte per literal, and one work
+  -- unit for the block itself. Every total below follows from that, not from
+  -- asking the decoder, so an under-charge anywhere in the header shows up.
+  local dynamic_blocks, dynamic_literals = 6, 3000
+  local dynamic = BuildDynamicBlockStream(dynamic_blocks, dynamic_literals)
+  local dynamic_output = string.rep("A", dynamic_blocks * dynamic_literals)
+  decoded = Decode(deflate_case.Decompress, "dynamic block stream", dynamic)
+  assert(decoded[1] == dynamic_output,
+         "the hand-built dynamic-block stream must decode to its literals")
+
+  local dynamic_totals = {
+    {
+      "max_symbols", dynamic_blocks * (6 + dynamic_literals + 1),
+      Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED
+    }, {
+      "max_output_bytes", dynamic_blocks * dynamic_literals,
+      Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED
+    }, {
+      "max_work_units",
+      dynamic_blocks * (1 + 276 + 6 + (dynamic_literals + 1) + dynamic_literals),
+      Guard.ERRORS.WORK_LIMIT_EXCEEDED
+    }, {"max_blocks", dynamic_blocks, Guard.ERRORS.BLOCK_LIMIT_EXCEEDED},
+    {"max_input_bytes", #dynamic, Guard.ERRORS.INPUT_LIMIT_EXCEEDED}
+  }
+  for _, total in ipairs(dynamic_totals) do
+    local key, needed, expected = total[1], total[2], total[3]
+    result = Decode(deflate_case.Decompress, key .. " dynamic one under",
+                    dynamic, {[key] = needed - 1})
+    assert(result[1] == nil,
+           ("%s = %d must be refused on the dynamic stream"):format(key,
+                                                                    needed - 1))
+    assert(result[2] == expected,
+           ("%s dynamic one under must report %s, got %s"):format(key, expected,
+                                                                  tostring(
+                                                                    result[2])))
+
+    result = Decode(deflate_case.Decompress, key .. " dynamic exact", dynamic,
+                    {[key] = needed})
+    assert(result[1] == dynamic_output,
+           ("%s = %d is exactly the dynamic total and must be accepted"):format(
+             key, needed))
   end
 
   -- Stored blocks charge output from a different call site, through the
