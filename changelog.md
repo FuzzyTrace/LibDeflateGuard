@@ -1,3 +1,45 @@
+### LibDeflateGuard v1.1.0
+
+- **Breaking.** The default decode policy is now the addon-sized one. It was
+  `max_input_bytes = 1 MiB` and `max_output_bytes = 8 MiB`; it is now 64 KiB
+  and 512 KiB, with the block, symbol, and work budgets scaled to match. The
+  previous values remain available as `LIMIT_PRESETS.generous`. A decode on a
+  game client runs on the frame thread, and the old defaults still permitted a
+  stall of roughly a tenth of a second per call on a fast interpreter and
+  several times that on the World of Warcraft one. Callers who decode larger
+  members must now pass `LIMIT_PRESETS.generous` or a policy of their own.
+- **Breaking.** Codec decoders now cap their input. `DecodeForPrint`,
+  `DecodeForWoWAddonChannel`, `DecodeForWoWChatChannel`, and `codec:Decode`
+  take an optional cap as their last argument and refuse oversized input with
+  `input_limit_exceeded`. A codec decode runs before any decompression budget
+  applies, so it previously performed unbounded work on attacker-supplied
+  bytes; a 32 MiB print string cost about a second and 104 MiB of heap before
+  the decompressor ever saw it. The decode is linear, so this was a stall
+  rather than an amplification. The defaults are derived from the decompress
+  input cap rather than guessed, and are exposed as `DEFAULT_CODEC_LIMITS`.
+- Added `LIMIT_PRESETS`, with `addon` and `generous` entries. Both are
+  inspection copies, like `DEFAULT_LIMITS`.
+- Added two adversarial regression vectors to `tests/GuardTest.lua`: a maximum
+  amplification match bomb and a dynamic-header flood. Both are well-formed
+  RFC 1951, so neither is reachable by mutating a valid member, which is all
+  the fuzz suite could previously produce. They assert exact budget boundaries
+  rather than wall-clock bounds.
+- Documented that the budgets are per call, and that bounding a stream of
+  messages needs the caller's transport context.
+- Corrected the README's account of the non-throwing contract. Upstream
+  LibDeflate does not raise on malformed string input, and a 40000-case
+  differential fuzz across every decode entry point found no upstream throw.
+  The contract is a stable failure reason and structural containment, not a
+  patched upstream defect.
+- `tests/Test.lua` now passes an explicit conformance policy. It is a
+  wire-format suite over a multi-megabyte third-party corpus and should not be
+  silently bounded by whatever the shipping default happens to be.
+- No measurable decode cost. Against v1.0.1 over interleaved best-of-three
+  runs, raw Deflate, addon-channel, and print decoding all land within half a
+  microsecond per call in both directions, with and without the JIT. The codec
+  cap keeps its default path inline so an unoverridden call pays no extra
+  function call.
+
 ### LibDeflateGuard v1.0.1
 
 - Reduced decode-path overhead. Raw Deflate decoding is about 10 per cent

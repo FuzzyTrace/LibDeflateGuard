@@ -42,6 +42,21 @@ for k, v in pairs(old_globals) do
   assert(v == _G[k], "LibDeflate global leak at key: " .. tostring(k))
 end
 
+-- This is the inherited wire-format conformance suite. It encodes and decodes
+-- a multi-megabyte third-party corpus, so it explicitly opts out of the
+-- default budgets and codec caps rather than being silently bounded by them.
+-- Budget behaviour is the subject of tests/GuardTest.lua and
+-- tests/FuzzTest.lua; here the budgets exist only to stay out of the way of
+-- format coverage.
+local CONFORMANCE_LIMITS = {
+  max_input_bytes = 64 * 1024 * 1024,
+  max_output_bytes = 64 * 1024 * 1024,
+  max_blocks = 1048576,
+  max_symbols = 200000000,
+  max_work_units = 500000000
+}
+local CONFORMANCE_CODEC_BYTES = 64 * 1024 * 1024
+
 -- UnitTests
 local lu = require("luaunit")
 assert(lu)
@@ -469,14 +484,16 @@ local function CheckCompressAndDecompress(string_or_filename, is_file, levels,
         local compress_data_WoW_addon_encoded =
           LibDeflate:EncodeForWoWAddonChannel(compress_data)
         AssertLongStringEqual(LibDeflate:DecodeForWoWAddonChannel(
-                                compress_data_WoW_addon_encoded), compress_data,
+                                compress_data_WoW_addon_encoded,
+                                CONFORMANCE_CODEC_BYTES), compress_data,
                               compress_func_name)
 
         local compress_data_data_WoW_chat_encoded =
           LibDeflate:EncodeForWoWChatChannel(compress_data)
         AssertLongStringEqual(LibDeflate:DecodeForWoWChatChannel(
-                                compress_data_data_WoW_chat_encoded),
-                              compress_data, compress_func_name)
+                                compress_data_data_WoW_chat_encoded,
+                                CONFORMANCE_CODEC_BYTES), compress_data,
+                              compress_func_name)
 
         -- Put random bits in the padding bits of compressed data.
         -- to see if decompression still works.
@@ -501,11 +518,14 @@ local function CheckCompressAndDecompress(string_or_filename, is_file, levels,
         WriteToFile(compress_filename, compress_data)
 
         local decompress_to_run = {
-          {"DecompressDeflate", compress_data},
-          {"DecompressDeflateWithDict", compress_data, dictionary32768},
-
-          {"DecompressZlib", compress_data},
-          {"DecompressZlibWithDict", compress_data, dictionary32768}
+          {"DecompressDeflate", compress_data, CONFORMANCE_LIMITS}, {
+            "DecompressDeflateWithDict", compress_data, dictionary32768,
+            CONFORMANCE_LIMITS
+          }, {"DecompressZlib", compress_data, CONFORMANCE_LIMITS},
+          {
+            "DecompressZlibWithDict", compress_data, dictionary32768,
+            CONFORMANCE_LIMITS
+          }
         }
         lu.assertEquals(#decompress_to_run, #compress_to_run)
 
@@ -597,7 +617,8 @@ local function CheckCompressAndDecompress(string_or_filename, is_file, levels,
         if not unique_compress[stdout] then
           unique_compress[stdout] = true
           uniques_compress_count = uniques_compress_count + 1
-          local decompressData = LibDeflate:DecompressDeflate(stdout)
+          local decompressData = LibDeflate:DecompressDeflate(stdout,
+                                                              CONFORMANCE_LIMITS)
           AssertLongStringEqual(decompressData, origin,
                                 ("My decompress fail to decompress " ..
                                   "at zdeflate level: %s, strategy: %s"):format(
@@ -656,9 +677,11 @@ local function CheckDecompressIncludingError(compress, decompress, is_zlib)
   assert(is_zlib == true or is_zlib == nil)
   local d, decompress_status
   if is_zlib then
-    d, decompress_status = LibDeflate:DecompressZlib(compress)
+    d, decompress_status = LibDeflate:DecompressZlib(compress,
+                                                     CONFORMANCE_LIMITS)
   else
-    d, decompress_status = LibDeflate:DecompressDeflate(compress)
+    d, decompress_status = LibDeflate:DecompressDeflate(compress,
+                                                        CONFORMANCE_LIMITS)
   end
   lu.assertTrue(type(d) == "string" or type(d) == "nil")
   if d then
@@ -2740,6 +2763,8 @@ function TestExported:TestExported()
     _UPSTREAM_VERSION = "string",
     ERRORS = "table",
     DEFAULT_LIMITS = "table",
+    LIMIT_PRESETS = "table",
+    DEFAULT_CODEC_LIMITS = "table",
     Adler32 = "function",
     CreateDictionary = "function",
     CompressZlibWithDict = "function",

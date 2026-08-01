@@ -420,18 +420,23 @@ Test("every budget fires when it is set below what the member needs", function()
   literals = table.concat(literals)
   local fixed_member = Guard:CompressDeflate(literals, {level = 1})
 
+  -- A stored member is barely smaller than its payload, so it needs an
+  -- explicit input allowance to reach the block budget under the default
+  -- addon policy. The fourth field names the budget under test when the
+  -- policy has to carry more than one key.
   local floors = {
     {member, {max_symbols = 1}, Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED},
     {member, {max_work_units = 1}, Guard.ERRORS.WORK_LIMIT_EXCEEDED},
     {member, {max_output_bytes = 1}, Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED},
-    {member, {max_input_bytes = 1}, Guard.ERRORS.INPUT_LIMIT_EXCEEDED},
-    {stored, {max_blocks = 1}, Guard.ERRORS.BLOCK_LIMIT_EXCEEDED},
-    {fixed_member, {max_symbols = 1}, Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED},
+    {member, {max_input_bytes = 1}, Guard.ERRORS.INPUT_LIMIT_EXCEEDED}, {
+      stored, {max_blocks = 1, max_input_bytes = #stored},
+      Guard.ERRORS.BLOCK_LIMIT_EXCEEDED, "max_blocks"
+    }, {fixed_member, {max_symbols = 1}, Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED},
     {fixed_member, {max_output_bytes = 1}, Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED}
   }
   for _, floor in ipairs(floors) do
     local target, policy, expected = floor[1], floor[2], floor[3]
-    local key = next(policy)
+    local key = floor[4] or next(policy)
     local result = Decode(deflate_case.Decompress, key .. " floor", target,
                           policy)
     assert(result[1] == nil, key .. " = 1 must refuse the member")
@@ -552,7 +557,7 @@ Test("every budget fires when it is set below what the member needs", function()
   -- Without this a counter that fails to carry in DecompressStoreBlock is an
   -- undetected output bypass, exactly as it was in the block loop.
   result = Decode(deflate_case.Decompress, "stored blocks carry output", stored,
-                  {max_output_bytes = 100000})
+                  {max_output_bytes = 100000, max_input_bytes = #stored})
   assert(result[1] == nil,
          "stored output must carry across blocks and refuse the member")
   assert(result[2] == Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED,

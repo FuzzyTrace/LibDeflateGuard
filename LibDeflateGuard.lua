@@ -1,5 +1,5 @@
 --[[--
-LibDeflateGuard 1.0.1 <br>
+LibDeflateGuard 1.1.0 <br>
 Pure Lua compressor and decompressor with high compression ratio using
 DEFLATE/zlib format.
 
@@ -87,12 +87,12 @@ local LibDeflateGuard
 
 do
   LibDeflateGuard = {}
-  LibDeflateGuard._VERSION = "1.0.1"
+  LibDeflateGuard._VERSION = "1.1.0"
   LibDeflateGuard._NAME = "LibDeflateGuard"
   LibDeflateGuard._MODULE = "LibDeflateGuard"
   LibDeflateGuard._UPSTREAM_VERSION = "1.0.2-release"
   LibDeflateGuard._COPYRIGHT =
-    "LibDeflateGuard 1.0.1, based on LibDeflate 1.0.2-release. " ..
+    "LibDeflateGuard 1.1.0, based on LibDeflate 1.0.2-release. " ..
       "Copyright (C) 2018-2021 Haoqian He. Licensed under the zlib License."
 end
 
@@ -114,19 +114,60 @@ LibDeflateGuard.ERRORS = {
   INTERNAL_ERROR = "internal_error"
 }
 
-local _default_decompress_limits = {
+-- The "addon" preset is the default. It is sized for a game client, where a
+-- decode runs on the frame thread and a rejected message must not be felt.
+-- The "generous" preset is the pre-1.1 default, sized for a server or a
+-- desktop tool that can afford a longer stall.
+--
+-- These are per-call budgets. Bounding a stream of messages needs the
+-- caller's transport context and remains the caller's job.
+local _addon_decompress_limits = {
+  max_input_bytes = 64 * 1024,
+  max_output_bytes = 512 * 1024,
+  max_blocks = 256,
+  max_symbols = 750000,
+  max_work_units = 1500000
+}
+local _generous_decompress_limits = {
   max_input_bytes = 1024 * 1024,
   max_output_bytes = 8 * 1024 * 1024,
   max_blocks = 4096,
   max_symbols = 10000000,
   max_work_units = 25000000
 }
-LibDeflateGuard.DEFAULT_LIMITS = {
-  max_input_bytes = _default_decompress_limits.max_input_bytes,
-  max_output_bytes = _default_decompress_limits.max_output_bytes,
-  max_blocks = _default_decompress_limits.max_blocks,
-  max_symbols = _default_decompress_limits.max_symbols,
-  max_work_units = _default_decompress_limits.max_work_units
+local _default_decompress_limits = _addon_decompress_limits
+
+local function CopyLimits(limits)
+  return {
+    max_input_bytes = limits.max_input_bytes,
+    max_output_bytes = limits.max_output_bytes,
+    max_blocks = limits.max_blocks,
+    max_symbols = limits.max_symbols,
+    max_work_units = limits.max_work_units
+  }
+end
+
+-- Inspection copies. Mutating them does not alter the private tables the
+-- decoder enforces.
+LibDeflateGuard.LIMIT_PRESETS = {
+  addon = CopyLimits(_addon_decompress_limits),
+  generous = CopyLimits(_generous_decompress_limits)
+}
+LibDeflateGuard.DEFAULT_LIMITS = CopyLimits(_default_decompress_limits)
+
+-- A codec decode exists to feed a decompress, so its cap is derived from the
+-- decompress input cap rather than guessed. The print codec emits 0.75 bytes
+-- per input byte, so anything above 4/3 of the decompress input cap cannot
+-- produce a member that a default-limits decompress would accept. The channel
+-- codecs never grow their input, so their cap is the decompress cap itself.
+-- A caller who raises max_input_bytes must raise these to match.
+local _default_print_input_bytes = math.floor(
+                                     _default_decompress_limits.max_input_bytes *
+                                       4 / 3)
+local _default_codec_input_bytes = _default_decompress_limits.max_input_bytes
+LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
+  print_max_input_bytes = _default_print_input_bytes,
+  channel_max_input_bytes = _default_codec_input_bytes
 }
 
 -- localize Lua api for faster access.
@@ -3040,6 +3081,15 @@ local function escape_for_gsub(str)
   return str:gsub("([%z%(%)%.%%%+%-%*%?%[%]%^%$])", _gsub_escape_table)
 end
 
+-- Resolve a codec decode input cap. Returns the cap, or nil if the caller
+-- supplied something that is not a positive whole number of bytes.
+local function ResolveCodecInputCap(cap, default_cap)
+  if cap == nil then return default_cap end
+  if type(cap) ~= "number" or cap ~= cap or cap < 1 or cap == math_huge or cap ~=
+    math_floor(cap) then return nil end
+  return cap
+end
+
 --- Create a custom codec with encoder and decoder. <br>
 -- This codec is used to convert an input string to make it not contain
 -- some specific bytes.
@@ -3217,9 +3267,21 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
   end
   local escape_scan_pattern = "[" .. escape_for_gsub(escape_chars) .. "]"
 
-  function codec:Decode(str)
+  function codec:Decode(str, max_input_bytes)
     if type(str) ~= "string" then
       return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
+    end
+    -- A codec decode is linear, so an oversized input is a stall rather than
+    -- an amplification. It still runs before any decompress budget applies,
+    -- so it carries its own cap. Callers almost never override it, so the
+    -- default path stays inline and does not pay for a call.
+    local cap = _default_codec_input_bytes
+    if max_input_bytes ~= nil then
+      cap = ResolveCodecInputCap(max_input_bytes, cap)
+      if not cap then return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT end
+    end
+    if #str > cap then
+      return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED
     end
     if string_find(str, decode_fail_pattern) then
       return nil, LibDeflateGuard.ERRORS.INVALID_ESCAPE
@@ -3270,7 +3332,7 @@ end
 -- @param str [string] The string to be decoded.
 -- @return [string/nil] The decoded string if succeeds. nil if fails.
 -- @see LibDeflateGuard:EncodeForWoWAddonChannel
-function LibDeflateGuard:DecodeForWoWAddonChannel(str)
+function LibDeflateGuard:DecodeForWoWAddonChannel(str, max_input_bytes)
   if type(str) ~= "string" then
     return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
   end
@@ -3283,7 +3345,7 @@ function LibDeflateGuard:DecodeForWoWAddonChannel(str)
   if type(codec) ~= "table" or type(codec.Decode) ~= "function" then
     return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR
   end
-  local ok, result, status = pcall(codec.Decode, codec, str)
+  local ok, result, status = pcall(codec.Decode, codec, str, max_input_bytes)
   if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
   return result, status
 end
@@ -3341,7 +3403,7 @@ end
 -- @param str [string] The string to be decoded.
 -- @return [string/nil] The decoded string if succeeds. nil if fails.
 -- @see LibDeflateGuard:EncodeForWoWChatChannel
-function LibDeflateGuard:DecodeForWoWChatChannel(str)
+function LibDeflateGuard:DecodeForWoWChatChannel(str, max_input_bytes)
   if type(str) ~= "string" then
     return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
   end
@@ -3354,7 +3416,7 @@ function LibDeflateGuard:DecodeForWoWChatChannel(str)
   if type(codec) ~= "table" or type(codec.Decode) ~= "function" then
     return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR
   end
-  local ok, result, status = pcall(codec.Decode, codec, str)
+  local ok, result, status = pcall(codec.Decode, codec, str, max_input_bytes)
   if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
   return result, status
 end
@@ -3615,10 +3677,18 @@ local function DecodeForPrintInternal(str)
   return table_concat(buffer)
 end
 
-function LibDeflateGuard:DecodeForPrint(str)
+function LibDeflateGuard:DecodeForPrint(str, max_input_bytes)
   if type(str) ~= "string" then
     return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
   end
+  -- This decode runs before any decompress budget applies, so it carries its
+  -- own cap. See _default_print_input_bytes for how the default is derived.
+  local cap = _default_print_input_bytes
+  if max_input_bytes ~= nil then
+    cap = ResolveCodecInputCap(max_input_bytes, cap)
+    if not cap then return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT end
+  end
+  if #str > cap then return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED end
   local ok, result = pcall(DecodeForPrintInternal, str)
   if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
   if result == nil then return nil, LibDeflateGuard.ERRORS.INVALID_PRINT end
