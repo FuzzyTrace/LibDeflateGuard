@@ -299,6 +299,55 @@ Test("print decoder returns stable non-throwing errors", function()
   end
 end)
 
+Test("codec decoders cap their input", function()
+  local channel_cap = Guard.DEFAULT_CODEC_LIMITS.channel_max_input_bytes
+  local print_cap = Guard.DEFAULT_CODEC_LIMITS.print_max_input_bytes
+
+  -- The print cap is derived from the decompress input cap, not guessed:
+  -- the codec emits 0.75 bytes per input byte, so anything above 4/3 of the
+  -- decompress cap cannot produce a member a default decode would accept.
+  AssertEqual(print_cap,
+              math.floor(Guard.DEFAULT_LIMITS.max_input_bytes * 4 / 3),
+              "print cap derivation")
+  AssertEqual(channel_cap, Guard.DEFAULT_LIMITS.max_input_bytes,
+              "channel cap derivation")
+
+  local over = string.rep("a", print_cap + 1)
+  local output, decode_error = Guard:DecodeForPrint(over)
+  AssertEqual(output, nil, "print over cap output")
+  AssertEqual(decode_error, Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+              "print over cap error")
+  -- Exactly at the cap must still be admitted to the decoder proper.
+  local at = string.rep("a", print_cap)
+  output, decode_error = Guard:DecodeForPrint(at)
+  assert(output ~= nil or decode_error == Guard.ERRORS.INVALID_PRINT,
+         "print at cap must reach the decoder, got " .. tostring(decode_error))
+
+  local channel_over = string.rep("x", channel_cap + 1)
+  output, decode_error = Guard:DecodeForWoWAddonChannel(channel_over)
+  AssertEqual(output, nil, "addon over cap output")
+  AssertEqual(decode_error, Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+              "addon over cap error")
+  output, decode_error = Guard:DecodeForWoWChatChannel(channel_over)
+  AssertEqual(decode_error, Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+              "chat over cap error")
+
+  -- An explicit cap overrides the default in both directions.
+  AssertEqual(select(2, Guard:DecodeForWoWAddonChannel("ab", 1)),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "explicit tighter cap")
+  AssertEqual(Guard:DecodeForWoWAddonChannel(channel_over, channel_cap + 1),
+              channel_over, "explicit looser cap")
+
+  for _, bad in ipairs({0, -1, 1.5, math.huge, "64", true}) do
+    AssertEqual(select(2, Guard:DecodeForPrint("aaaa", bad)),
+                Guard.ERRORS.INVALID_ARGUMENT, "invalid cap: " .. tostring(bad))
+  end
+
+  local custom = assert(Guard:CreateCodec("A", "B", ""))
+  AssertEqual(select(2, custom:Decode(string.rep("z", channel_cap + 1))),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "custom codec cap")
+end)
+
 _G.LibStub = original_libstub
 _G.LibDeflate = original_libdeflate
 _G.LibDeflateGuard = original_libdeflateguard

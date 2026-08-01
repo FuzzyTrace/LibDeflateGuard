@@ -42,6 +42,13 @@ for k, v in pairs(old_globals) do
   assert(v == _G[k], "LibDeflate global leak at key: " .. tostring(k))
 end
 
+-- This is the inherited wire-format conformance suite. It encodes and decodes
+-- a multi-megabyte third-party corpus, so it explicitly opts out of the codec
+-- input caps rather than being silently bounded by them. Cap behaviour is the
+-- subject of tests/GuardTest.lua; here the caps exist only to stay out of the
+-- way of format coverage.
+local CONFORMANCE_CODEC_BYTES = 64 * 1024 * 1024
+
 -- UnitTests
 local lu = require("luaunit")
 assert(lu)
@@ -469,14 +476,16 @@ local function CheckCompressAndDecompress(string_or_filename, is_file, levels,
         local compress_data_WoW_addon_encoded =
           LibDeflate:EncodeForWoWAddonChannel(compress_data)
         AssertLongStringEqual(LibDeflate:DecodeForWoWAddonChannel(
-                                compress_data_WoW_addon_encoded), compress_data,
+                                compress_data_WoW_addon_encoded,
+                                CONFORMANCE_CODEC_BYTES), compress_data,
                               compress_func_name)
 
         local compress_data_data_WoW_chat_encoded =
           LibDeflate:EncodeForWoWChatChannel(compress_data)
         AssertLongStringEqual(LibDeflate:DecodeForWoWChatChannel(
-                                compress_data_data_WoW_chat_encoded),
-                              compress_data, compress_func_name)
+                                compress_data_data_WoW_chat_encoded,
+                                CONFORMANCE_CODEC_BYTES), compress_data,
+                              compress_func_name)
 
         -- Put random bits in the padding bits of compressed data.
         -- to see if decompression still works.
@@ -2740,6 +2749,7 @@ function TestExported:TestExported()
     _UPSTREAM_VERSION = "string",
     ERRORS = "table",
     DEFAULT_LIMITS = "table",
+    DEFAULT_CODEC_LIMITS = "table",
     Adler32 = "function",
     CreateDictionary = "function",
     CompressZlibWithDict = "function",
