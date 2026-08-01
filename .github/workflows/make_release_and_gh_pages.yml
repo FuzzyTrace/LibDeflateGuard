@@ -14,6 +14,12 @@ on:
 jobs:
   make_release_and_gh_pages:
     runs-on: ubuntu-latest
+    # The repository default for GITHUB_TOKEN is read-only, so the final step
+    # cannot push the regenerated docs to gh-pages and the job fails with a
+    # 403 on every push to main. Granting write here rather than flipping the
+    # repository-wide default keeps every other workflow read-only.
+    permissions:
+      contents: write
     env:
       LUA: lua-5.1.5
       LUAROCKS: 3.7.0
