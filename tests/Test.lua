@@ -2414,7 +2414,7 @@ end
 function TestErrors:TestCompressDeflate()
   TestInvalidCompressDecompressArgs(
     "Usage: LibDeflateGuard:CompressDeflate(str, configs): ", function(str, _,
-                                                                  configs)
+                                                                       configs)
       return LibDeflate:CompressDeflate(str, configs)
     end, false, true)
 end
@@ -2432,11 +2432,11 @@ function TestErrors:TestCompressZlib()
     false, true)
 end
 function TestErrors:TestCompressZlibWithDict()
-  TestInvalidCompressDecompressArgs("Usage: LibDeflateGuard:CompressZlibWithDict" ..
-                                      "(str, dictionary, configs): ",
-                                    function(str, dictionary, configs)
-    return LibDeflate:CompressZlibWithDict(str, dictionary, configs)
-  end, true, true)
+  TestInvalidCompressDecompressArgs(
+    "Usage: LibDeflateGuard:CompressZlibWithDict" ..
+      "(str, dictionary, configs): ", function(str, dictionary, configs)
+      return LibDeflate:CompressZlibWithDict(str, dictionary, configs)
+    end, true, true)
 end
 function LegacyTests:LegacyThrowingDecompressDeflate()
   TestInvalidCompressDecompressArgs(
@@ -2445,10 +2445,9 @@ function LegacyTests:LegacyThrowingDecompressDeflate()
     false)
 end
 function LegacyTests:LegacyThrowingDecompressZlib()
-  TestInvalidCompressDecompressArgs("Usage: LibDeflateGuard:DecompressZlib(str): ",
-                                    function(str, _, _)
-    return LibDeflate:DecompressZlib(str)
-  end, false, false)
+  TestInvalidCompressDecompressArgs(
+    "Usage: LibDeflateGuard:DecompressZlib(str): ",
+    function(str, _, _) return LibDeflate:DecompressZlib(str) end, false, false)
 end
 function LegacyTests:LegacyThrowingDecompressDeflateWithDict()
   TestInvalidCompressDecompressArgs(
@@ -2465,18 +2464,18 @@ function LegacyTests:LegacyThrowingDecompressZlibWithDict()
     end, true, false)
 end
 function TestErrors:TestCreateCodec()
-  lu.assertErrorMsgContains("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
-                              " escape_chars, map_chars):" ..
-                              " All arguments must be string.",
-                            function() LibDeflate:CreateCodec(nil, "", "") end)
-  lu.assertErrorMsgContains("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
-                              " escape_chars, map_chars):" ..
-                              " All arguments must be string.",
-                            function() LibDeflate:CreateCodec("", nil, "") end)
-  lu.assertErrorMsgContains("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
-                              " escape_chars, map_chars):" ..
-                              " All arguments must be string.",
-                            function() LibDeflate:CreateCodec("", "", nil) end)
+  lu.assertErrorMsgContains(
+    "Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
+      " escape_chars, map_chars):" .. " All arguments must be string.",
+    function() LibDeflate:CreateCodec(nil, "", "") end)
+  lu.assertErrorMsgContains(
+    "Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
+      " escape_chars, map_chars):" .. " All arguments must be string.",
+    function() LibDeflate:CreateCodec("", nil, "") end)
+  lu.assertErrorMsgContains(
+    "Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
+      " escape_chars, map_chars):" .. " All arguments must be string.",
+    function() LibDeflate:CreateCodec("", "", nil) end)
   local t, err = LibDeflate:CreateCodec("1", "2", "")
   lu.assertNil(err)
 end
@@ -2591,8 +2590,7 @@ function TestCommandLine:TestErrors()
   returned_status, stdout, stderr = RunCommandline("-invalid")
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
-  lu.assertStrContains(stderr,
-                       ("LibDeflateGuard: Invalid argument: %s"):format(
+  lu.assertStrContains(stderr, ("LibDeflateGuard: Invalid argument: %s"):format(
                          "-invalid"))
 
   returned_status, stdout, stderr = RunCommandline(

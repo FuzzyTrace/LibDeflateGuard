@@ -540,7 +540,7 @@ local function lshift64(value_high, value, lshift_amount)
   end
   -- 32-63 bit shift
   return bit_lshift(value, lshift_amount), -- builtin modulus 32 on shift amount
-  0
+         0
 end
 
 local function rshift64(value_high, value, rshift_amount)
