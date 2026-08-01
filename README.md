@@ -118,7 +118,7 @@ A caller can also supply any table of its own; omitted keys fall back to the
 `addon` values. `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies.
 Mutating them does not alter the private defaults enforced by the decoder.
 
-These are per-call budgets. Bounding a *stream* of messages needs the caller's
+These are per-call budgets. Bounding a _stream_ of messages needs the caller's
 transport context and remains the caller's job.
 
 `max_symbols` counts every Huffman decode attempt, including dynamic-header,
@@ -204,7 +204,7 @@ check its size. Callers should also enforce transport-level message limits.
 The resource limits are the part of this fork that closes a reachable
 vulnerability. The non-throwing contract is a different kind of change and is
 worth describing accurately: upstream LibDeflate already returns `nil` rather
-than raising for malformed *string* input, and a 40000-case differential fuzz
+than raising for malformed _string_ input, and a 40000-case differential fuzz
 across every decode entry point produced no upstream throw. What this fork adds
 there is a stable machine-readable reason for each failure, uniform handling of
 wrongly typed arguments, and structural containment so a future decode-path
