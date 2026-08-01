@@ -372,6 +372,182 @@ Test("codec decoders cap their input", function()
               Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "custom codec cap")
 end)
 
+-- Adversarial vectors. FuzzTest mutates valid members, which finds parser
+-- bugs but never produces these shapes: both are well-formed RFC 1951 and
+-- are built to maximise output-per-input and table-builds-per-input.
+-- The assertions are exact budget boundaries rather than wall-clock bounds,
+-- so a future optimisation that stops charging for one of these steps fails
+-- here deterministically on every interpreter.
+local function BitWriter()
+  local bytes, cache, cache_bitlen = {}, 0, 0
+  local function write(value, bitlen)
+    -- DEFLATE packs bits least-significant first within each byte.
+    cache = cache + value * 2 ^ cache_bitlen
+    cache_bitlen = cache_bitlen + bitlen
+    while cache_bitlen >= 8 do
+      local byte = cache % 256
+      bytes[#bytes + 1] = string.char(byte)
+      cache = (cache - byte) / 256
+      cache_bitlen = cache_bitlen - 8
+    end
+  end
+  local function finish()
+    if cache_bitlen > 0 then bytes[#bytes + 1] = string.char(cache % 256) end
+    return table.concat(bytes)
+  end
+  return write, finish
+end
+
+-- Huffman codes are defined most-significant-bit first but written
+-- least-significant first, so they are reversed on the way out.
+local function Reverse(value, bitlen)
+  local out = 0
+  for _ = 1, bitlen do
+    out = out * 2 + value % 2
+    value = math.floor(value / 2)
+  end
+  return out
+end
+
+-- One fixed-Huffman block: a seed literal followed by `pair_count` copies of
+-- (length 258, distance 1). Each pair costs 13 bits and emits 258 bytes, so
+-- this is a 158:1 amplifier. RFC 1951 permits up to 1032:1; the guard bounds
+-- output directly, so the exact ratio only changes how fast the cap is hit.
+local function MatchBomb(pair_count)
+  local write, finish = BitWriter()
+  write(1, 1) -- BFINAL
+  write(1, 2) -- BTYPE 01, fixed Huffman
+  write(Reverse(0x30, 8), 8) -- literal \000, seeds the window
+  for _ = 1, pair_count do
+    write(Reverse(0xC5, 8), 8) -- symbol 285, length 258
+    write(Reverse(0, 5), 5) -- distance symbol 0, distance 1
+  end
+  write(Reverse(0, 7), 7) -- symbol 256, end of block
+  return finish()
+end
+
+-- One minimal dynamic block: a full 19-entry code-length alphabet and 258
+-- code lengths, then an immediate end-of-block. Produces zero output while
+-- forcing the header path to build Huffman tables.
+local function DynamicHeaderBlock(write, is_last)
+  write(is_last and 1 or 0, 1)
+  write(2, 2) -- BTYPE 10, dynamic
+  write(257 - 257, 5) -- HLIT  -> nlen  = 257
+  write(1 - 1, 5) -- HDIST -> ndist = 1
+  write(19 - 4, 4) -- HCLEN -> ncode = 19
+  local order = {
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+  }
+  for _, symbol in ipairs(order) do
+    -- Give code-length symbols 0 and 1 a one-bit code each.
+    write((symbol == 0 or symbol == 1) and 1 or 0, 3)
+  end
+  for i = 0, 256 do write(Reverse(i == 256 and 1 or 0, 1), 1) end
+  write(Reverse(1, 1), 1) -- the single distance code length
+  write(Reverse(0, 1), 1) -- body: end-of-block, the only lit/len code
+end
+
+local function HeaderFlood(block_count)
+  local write, finish = BitWriter()
+  for i = 1, block_count do DynamicHeaderBlock(write, i == block_count) end
+  return finish()
+end
+
+Test("amplification bomb is charged exactly and refused by default", function()
+  local pairs_count = 64
+  local member = MatchBomb(pairs_count)
+  -- Charging model, from the decode path:
+  --   symbols = 1 seed + 2 per pair + 1 end-of-block
+  --   output  = 1 seed byte + 258 per pair
+  --   work    = 1 block + symbols + output
+  local expected_output = 1 + 258 * pairs_count
+  local expected_symbols = 2 * pairs_count + 2
+  local expected_work = 1 + expected_symbols + expected_output
+
+  local generous = {
+    max_input_bytes = #member,
+    max_output_bytes = expected_output,
+    max_blocks = 1,
+    max_symbols = expected_symbols,
+    max_work_units = expected_work
+  }
+  local output, decode_error = Guard:DecompressDeflate(member, generous)
+  assert(output, "exact budget must decode: " .. tostring(decode_error))
+  AssertEqual(#output, expected_output, "bomb output length")
+
+  local function OneLess(key)
+    local policy = {}
+    for k, v in pairs(generous) do policy[k] = v end
+    policy[key] = policy[key] - 1
+    return select(2, Guard:DecompressDeflate(member, policy))
+  end
+  AssertEqual(OneLess("max_output_bytes"), Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "output charged exactly")
+  AssertEqual(OneLess("max_symbols"), Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+              "symbols charged exactly")
+  AssertEqual(OneLess("max_work_units"), Guard.ERRORS.WORK_LIMIT_EXCEEDED,
+              "work charged exactly")
+
+  -- The shape that matters: small enough to pass the input cap, large enough
+  -- to exhaust output. This is the payload an attacker actually sends.
+  local hostile = MatchBomb(4096)
+  local hostile_output = 1 + 258 * 4096
+  assert(#hostile < Guard.DEFAULT_LIMITS.max_input_bytes,
+         "hostile payload must clear the input cap to be a real test")
+  assert(hostile_output > Guard.DEFAULT_LIMITS.max_output_bytes,
+         "hostile payload must exceed the output cap")
+  assert(hostile_output / #hostile > 100,
+         "hostile payload must actually amplify")
+  output, decode_error = Guard:DecompressDeflate(hostile)
+  AssertEqual(output, nil, "hostile bomb output")
+  AssertEqual(decode_error, Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "hostile bomb error")
+end)
+
+Test("dynamic header flood is charged exactly and refused by default",
+     function()
+  -- Charging model, per block, from the decode path:
+  --   work    = 1 block + (ncode + nlen + ndist) header + 258 RLE + 1 EOB
+  --   symbols = 258 RLE + 1 end-of-block
+  --   output  = 0
+  local work_per_block = 1 + (19 + 257 + 1) + 258 + 1
+  local symbols_per_block = 258 + 1
+
+  local one = HeaderFlood(1)
+  local exact = {
+    max_input_bytes = #one,
+    max_output_bytes = 1,
+    max_blocks = 1,
+    max_symbols = symbols_per_block,
+    max_work_units = work_per_block
+  }
+  local output, decode_error = Guard:DecompressDeflate(one, exact)
+  assert(output, "exact header budget must decode: " .. tostring(decode_error))
+  AssertEqual(output, "", "header flood produces no output")
+
+  exact.max_work_units = work_per_block - 1
+  AssertEqual(select(2, Guard:DecompressDeflate(one, exact)),
+              Guard.ERRORS.WORK_LIMIT_EXCEEDED, "header work charged exactly")
+  exact.max_work_units = work_per_block
+  exact.max_symbols = symbols_per_block - 1
+  AssertEqual(select(2, Guard:DecompressDeflate(one, exact)),
+              Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+              "header symbols charged exactly")
+
+  -- Zero output means max_output_bytes never binds; the block budget is the
+  -- only thing standing between the caller and unbounded table construction.
+  local limit = Guard.DEFAULT_LIMITS.max_blocks
+  local flood = HeaderFlood(limit + 1)
+  assert(#flood < Guard.DEFAULT_LIMITS.max_input_bytes,
+         "flood must clear the input cap to be a real test")
+  output, decode_error = Guard:DecompressDeflate(flood)
+  AssertEqual(output, nil, "flood output")
+  AssertEqual(decode_error, Guard.ERRORS.BLOCK_LIMIT_EXCEEDED, "flood error")
+
+  AssertEqual(Guard:DecompressDeflate(HeaderFlood(limit)), "",
+              "exactly max_blocks must decode")
+end)
+
 _G.LibStub = original_libstub
 _G.LibDeflate = original_libdeflate
 _G.LibDeflateGuard = original_libdeflateguard
