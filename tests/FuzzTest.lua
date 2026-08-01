@@ -52,6 +52,14 @@ local scale = tonumber(os.getenv("LIBDEFLATEGUARD_FUZZ_ITERATIONS") or "") or 1
 -- 64-bit integers, so any intermediate above 2^53 rounds on the former and
 -- not on the latter, and the two would silently diverge. MINSTD peaks near
 -- 2^45, which is exact in both. AssertGeneratorIsPortable below pins it.
+-- A seed at or above 2^53 would itself be rounded differently on the two
+-- arithmetics, which would defeat the whole point, so reject one rather than
+-- quietly run a workload that does not match anyone else's.
+if not (seed == math.floor(seed) and seed >= 0 and seed < 2147483647) then
+  io.stderr:write("LIBDEFLATEGUARD_FUZZ_SEED must be a whole number below ",
+                  "2147483647, got ", tostring(seed), "\n")
+  os.exit(1)
+end
 local rng_state = seed % 2147483647
 if rng_state == 0 then rng_state = 1 end -- 0 is MINSTD's fixed point
 local function Random(upper)
@@ -391,55 +399,59 @@ Test("every budget fires when it is set below what the member needs", function()
   assert(result[2] == Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
          "the symbol floor must report symbol_limit_exceeded")
 
-  -- The same accumulation argument for the other two per-symbol budgets. The
-  -- decoder keeps these counters in locals for the length of a block and
-  -- publishes them to the state on the way out, so a member split across
-  -- several blocks is the only shape that can catch a counter that fails to
-  -- carry from one block into the next. A cap set between the largest single
-  -- block and the whole member must still be refused.
-  local carry_floors = {
-    {
-      {max_output_bytes = math.floor(#spread / 2)},
-      Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED
-    },
-    {
-      {max_work_units = math.floor(#spread / 2)},
-      Guard.ERRORS.WORK_LIMIT_EXCEEDED
-    }
-  }
-  for _, floor in ipairs(carry_floors) do
-    local policy, expected = floor[1], floor[2]
-    local key = next(policy)
-    result = Decode(deflate_case.Decompress, key .. " carries across blocks",
-                    multiblock, policy)
-    assert(result[1] == nil,
-           key .. " must carry across blocks and refuse the member")
-    assert(result[2] == expected, ("%s must report %s, got %s"):format(key,
-                                                                       expected,
-                                                                       tostring(
-                                                                         result[2])))
-  end
-
-  -- Symbols, on a shape the compressor cannot produce. Eight fixed blocks of
-  -- 4000 literals each is 8 * (4000 + 1 end-of-block) = 32008 symbols, so the
-  -- boundary is exact and a counter that resets per block shows up at once.
+  -- Every budget, on a shape the compressor cannot produce, with exact
+  -- boundaries. Eight fixed-Huffman blocks of 4000 literals each gives a
+  -- hand-computable total for all five: one under must be refused and the
+  -- exact total accepted. Exact boundaries matter here. A cap picked with a
+  -- comfortable margin still passes when a counter silently under-charges,
+  -- which is the failure this whole section exists to catch.
+  --
+  -- The shape matters too. A dynamic block also charges symbols and work
+  -- through its code-length header, which masks a per-block counter; a fixed
+  -- block has no header, so the block loop is the only thing charging.
   local fixed_blocks = BuildFixedBlockStream(8, 4000)
+  local fixed_output = string.rep("A", 32000)
   local decoded = Decode(deflate_case.Decompress, "fixed block stream",
                          fixed_blocks)
-  assert(decoded[1] == string.rep("A", 32000),
+  assert(decoded[1] == fixed_output,
          "the hand-built fixed-block stream must decode to its literals")
 
-  result = Decode(deflate_case.Decompress, "symbols carry across blocks",
-                  fixed_blocks, {max_symbols = 32007})
-  assert(result[1] == nil,
-         "max_symbols must carry across fixed blocks and refuse the member")
-  assert(result[2] == Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
-         "the fixed-block symbol total must report symbol_limit_exceeded")
+  local exact_totals = {
+    {"max_symbols", 32008, Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED}, -- 8 * 4001
+    {"max_output_bytes", 32000, Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED}, -- 8 * 4000
+    {"max_work_units", 64016, Guard.ERRORS.WORK_LIMIT_EXCEEDED}, -- symbols + output + blocks
+    {"max_blocks", 8, Guard.ERRORS.BLOCK_LIMIT_EXCEEDED},
+    {"max_input_bytes", 32010, Guard.ERRORS.INPUT_LIMIT_EXCEEDED}
+  }
+  for _, total in ipairs(exact_totals) do
+    local key, needed, expected = total[1], total[2], total[3]
+    result = Decode(deflate_case.Decompress, key .. " one under the total",
+                    fixed_blocks, {[key] = needed - 1})
+    assert(result[1] == nil,
+           ("%s = %d must be refused, one under the true total"):format(key,
+                                                                        needed -
+                                                                          1))
+    assert(result[2] == expected,
+           ("%s one under must report %s, got %s"):format(key, expected,
+                                                          tostring(result[2])))
 
-  result = Decode(deflate_case.Decompress, "symbols exactly sufficient",
-                  fixed_blocks, {max_symbols = 32008})
-  assert(result[1] == string.rep("A", 32000),
-         "a budget of exactly the symbol total must be accepted")
+    result = Decode(deflate_case.Decompress, key .. " exactly the total",
+                    fixed_blocks, {[key] = needed})
+    assert(result[1] == fixed_output,
+           ("%s = %d is exactly the total and must be accepted"):format(key,
+                                                                        needed))
+  end
+
+  -- Stored blocks charge output from a different call site, through the
+  -- state rather than through a local, so they need their own carry case.
+  -- Without this a counter that fails to carry in DecompressStoreBlock is an
+  -- undetected output bypass, exactly as it was in the block loop.
+  result = Decode(deflate_case.Decompress, "stored blocks carry output", stored,
+                  {max_output_bytes = 100000})
+  assert(result[1] == nil,
+         "stored output must carry across blocks and refuse the member")
+  assert(result[2] == Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+         "stored output carry must report output_limit_exceeded")
 
   -- The same member must decode once the budgets are lifted.
   local ok = Decode(deflate_case.Decompress, "lifted budgets", member)
