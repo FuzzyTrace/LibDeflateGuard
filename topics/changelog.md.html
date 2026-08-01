@@ -3,7 +3,7 @@
 <html>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
 <head>
-    <title>LibDeflate documentation</title>
+    <title>LibDeflateGuard documentation</title>
     <link rel="stylesheet" href="../ldoc.css" type="text/css" />
 </head>
 <body>
@@ -24,7 +24,7 @@
 
 <div id="navigation">
 <br/>
-<h1>LibDeflate</h1>
+<h1>LibDeflateGuard</h1>
 
 <ul>
   <li><a href="../index.html">Index</a></li>
@@ -45,13 +45,114 @@
 </ul>
 <h2>Source</h2>
 <ul class="nowrap">
-  <li><a href="../source/LibDeflate.lua.html">LibDeflate.lua</a></li>
+  <li><a href="../source/LibDeflateGuard.lua.html">LibDeflateGuard.lua</a></li>
 </ul>
 
 </div>
 
 <div id="content">
 
+
+<h3>LibDeflateGuard v1.1.0</h3>
+
+<ul>
+    <li><strong>Breaking.</strong> The default decode policy is now the addon-sized one. It was
+    <code>max_input_bytes = 1 MiB</code> and <code>max_output_bytes = 8 MiB</code>; it is now 64 KiB
+    and 512 KiB, with the block, symbol, and work budgets scaled to match. The
+    previous values remain available as <code>LIMIT_PRESETS.generous</code>. A decode on a
+    game client runs on the frame thread, and the old defaults still permitted a
+    stall of roughly a tenth of a second per call on a fast interpreter and
+    several times that on the World of Warcraft one. Callers who decode larger
+    members must now pass <code>LIMIT_PRESETS.generous</code> or a policy of their own.</li>
+    <li><strong>Breaking.</strong> Codec decoders now cap their input. <code>DecodeForPrint</code>,
+    <code>DecodeForWoWAddonChannel</code>, <code>DecodeForWoWChatChannel</code>, and <code>codec:Decode</code>
+    take an optional cap as their last argument and refuse oversized input with
+    <code>input_limit_exceeded</code>. A codec decode runs before any decompression budget
+    applies, so it previously performed unbounded work on attacker-supplied
+    bytes; a 32 MiB print string cost about a second and 104 MiB of heap before
+    the decompressor ever saw it. The decode is linear, so this was a stall
+    rather than an amplification. The defaults are derived from the decompress
+    input cap rather than guessed, and are exposed as <code>DEFAULT_CODEC_LIMITS</code>.</li>
+    <li>Added <code>LIMIT_PRESETS</code>, with <code>addon</code> and <code>generous</code> entries. Both are
+    inspection copies, like <code>DEFAULT_LIMITS</code>.</li>
+    <li>Added two adversarial regression vectors to <code>tests/GuardTest.lua</code>: a maximum
+    amplification match bomb and a dynamic-header flood. Both are well-formed
+    RFC 1951, so neither is reachable by mutating a valid member, which is all
+    the fuzz suite could previously produce. They assert exact budget boundaries
+    rather than wall-clock bounds.</li>
+    <li>Documented that the budgets are per call, and that bounding a stream of
+    messages needs the caller's transport context.</li>
+    <li>Corrected the README's account of the non-throwing contract. Upstream
+    LibDeflate does not raise on malformed string input, and a 40000-case
+    differential fuzz across every decode entry point found no upstream throw.
+    The contract is a stable failure reason and structural containment, not a
+    patched upstream defect.</li>
+    <li><code>tests/Test.lua</code> now passes an explicit conformance policy. It is a
+    wire-format suite over a multi-megabyte third-party corpus and should not be
+    silently bounded by whatever the shipping default happens to be.</li>
+    <li>No measurable decode cost. Against v1.0.1 over interleaved best-of-three
+    runs, raw Deflate, addon-channel, and print decoding all land within half a
+    microsecond per call in both directions, with and without the JIT. The codec
+    cap keeps its default path inline so an unoverridden call pays no extra
+    function call.</li>
+</ul>
+
+<h3>LibDeflateGuard v1.0.1</h3>
+
+<ul>
+    <li>Reduced decode-path overhead. Raw Deflate decoding is about 10 per cent
+    faster and zlib about 13 per cent, stored blocks about a third faster, and
+    World of Warcraft addon-channel decoding about twice as fast. A sweep of many
+    small messages also allocates far less, because a guarded decode no longer
+    builds a closure and a limits table on every call.</li>
+    <li>No decoder behaviour change. Every limit, error code, and accepted or
+    rejected input is the same. The optimised decoder was compared against the
+    previous one over hundreds of thousands of calls with no divergence.</li>
+    <li>Documented that <code>max_output_bytes</code> bounds the decoded string and not the Lua
+    heap, which peaks at roughly three to four times the decoded size. The
+    default 8 MiB output cap therefore implies a transient peak nearer 26 to
+    32 MiB.</li>
+    <li>Added <code>tests/FuzzTest.lua</code>, a randomized decode-path suite with
+    exact-boundary coverage for every resource limit across stored, fixed, and
+    dynamic blocks, and an optional differential mode that compares two copies of
+    the library call for call.</li>
+    <li>Fixed <code>tools/format_lua.sh</code>, which never passed a filename to the formatter,
+    so the Lua formatting check had never inspected anything. Formatted the Lua
+    sources to the repository's own configuration and excluded the vendored
+    LibCompress copy from formatting.</li>
+    <li>Added <code>.gitattributes</code> so shell scripts keep LF line endings. Every script in
+    <code>tools/</code> failed immediately on a Windows checkout before this.</li>
+    <li>Documented the local validation toolchain in <code>dev_docs/toolchain.md</code>.</li>
+</ul>
+
+<h3>LibDeflateGuard v1.0.0</h3>
+
+<ul>
+    <li>Established the independently maintained <code>LibDeflateGuard</code> module identity
+    from upstream LibDeflate <code>1.0.2-release</code> at commit
+    <code>afc3b78d12fb3bcfa6b21e5332031ad3d7572e19</code>.</li>
+    <li>Removed LibStub lookup, registration, and substitution. The fork now returns
+    a private module and can attach it only to the loading addon's private
+    namespace.</li>
+    <li>Added default and caller-configurable compressed-input, output, block,
+    Huffman-symbol, and deterministic work-unit limits.</li>
+    <li>Added stable, non-throwing symbolic failures and exception containment at
+    decompression and channel-decode seams.</li>
+    <li>Rejects complete trailing bytes after raw Deflate and zlib members.</li>
+    <li>Rejects malformed and non-canonical World of Warcraft addon-channel escapes.</li>
+    <li>Rejects non-canonical custom-codec escape input and print-codec terminal
+    padding.</li>
+    <li>Uses a supplied zlib dictionary only when FDICT and DICTID bind it to the
+    member.</li>
+    <li>Retains RFC 1951, zlib, World of Warcraft channel, and LibDeflate print-codec
+    wire compatibility, including an RCLootCouncil compatibility fixture.</li>
+    <li>Added independent regression coverage for module collisions, valid block
+    forms, malformed input, resource limits, codecs, and compatibility data.</li>
+    <li>Documented security scope, limits, provenance, and the upstream update
+    process.</li>
+</ul>
+
+<p>The entries below are the preserved upstream LibDeflate release history.</p>
 
 <h3>v1.0.2-release</h3>
 

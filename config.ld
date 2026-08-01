@@ -3,9 +3,9 @@ dir='../docs'
 examples = {
     '../examples/example.lua',
 }
-file='../LibDeflate.lua'
+file='../LibDeflateGuard.lua'
 format='markdown'
-project='LibDeflate'
+project='LibDeflateGuard'
 readme={
     '../README.md',
     '../changelog.md',
@@ -13,5 +13,5 @@ readme={
     '../LICENSE.txt',
 }
 sort = true
-title='LibDeflate documentation'
+title='LibDeflateGuard documentation'
 wrap = true

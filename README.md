@@ -8,7 +8,7 @@
 
 See [config.ld](config.ld) in this folder to see the files included in the documentation.
 
-Majority of the documents is written as the comment in LibDeflate.lua
+Most API documentation is written as comments in LibDeflateGuard.lua.
 
 Read the doc of [LDoc](https://stevedonovan.github.io/ldoc/manual/doc.md.html) for the comment syntax.
 

@@ -3,7 +3,7 @@
 <html>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
 <head>
-    <title>LibDeflate documentation</title>
+    <title>LibDeflateGuard documentation</title>
     <link rel="stylesheet" href="../ldoc.css" type="text/css" />
 </head>
 <body>
@@ -24,7 +24,7 @@
 
 <div id="navigation">
 <br/>
-<h1>LibDeflate</h1>
+<h1>LibDeflateGuard</h1>
 
 <ul>
   <li><a href="../index.html">Index</a></li>
@@ -32,16 +32,14 @@
 
 <h2>Contents</h2>
 <ul>
-<li><a href="#Pure_Lua_compressor_and_decompressor_with_high_compression_ratio_using_DEFLATE_zlib_format">Pure Lua compressor and decompressor with high compression ratio using DEFLATE/zlib format </a></li>
-<li><a href="#Introduction">Introduction </a></li>
-<li><a href="#Supported_Lua_Versions">Supported Lua Versions </a></li>
-<li><a href="#Documentation">Documentation </a></li>
-<li><a href="#Limitation">Limitation </a></li>
-<li><a href="#Performance">Performance </a></li>
-<li><a href="#Download_And_Install">Download And Install </a></li>
-<li><a href="#Usage">Usage </a></li>
-<li><a href="#License">License </a></li>
-<li><a href="#Credits_and_Disclaimer">Credits and Disclaimer </a></li>
+<li><a href="#What_is_different">What is different </a></li>
+<li><a href="#Loading_the_private_module">Loading the private module </a></li>
+<li><a href="#Safe_decoding">Safe decoding </a></li>
+<li><a href="#Compression_and_codecs">Compression and codecs </a></li>
+<li><a href="#Security_scope">Security scope </a></li>
+<li><a href="#Validation">Validation </a></li>
+<li><a href="#Provenance_and_upstream_updates">Provenance and upstream updates </a></li>
+<li><a href="#License_and_credits">License and credits </a></li>
 </ul>
 
 
@@ -58,7 +56,7 @@
 </ul>
 <h2>Source</h2>
 <ul class="nowrap">
-  <li><a href="../source/LibDeflate.lua.html">LibDeflate.lua</a></li>
+  <li><a href="../source/LibDeflateGuard.lua.html">LibDeflateGuard.lua</a></li>
 </ul>
 
 </div>
@@ -66,235 +64,352 @@
 <div id="content">
 
 
-<p><a href="https://github.com/SafeteeWoW/LibDeflate/actions/workflows/lua_test.yml"><img src="https://github.com/SafeteeWoW/LibDeflate/actions/workflows/lua_test.yml/badge.svg" alt="CI"/></a>
-<a href="http://codecov.io/github/safeteeWoW/LibDeflate"><img src="http://codecov.io/github/safeteeWoW/LibDeflate/branch/master/graphs/badge.svg" alt="codecov.io"/></a>
-<a href="LICENSE.txt"><img src="https://img.shields.io/github/license/SafeteeWoW/LibDeflate" alt="license"/></a>
-<a href="http://luarocks.org/modules/SafeteeWoW/libdeflate"><img src="https://img.shields.io/luarocks/v/SafeteeWoW/libdeflate" alt="LuaRocks"/></a>
-<a href="https://github.com/SafeteeWoW/LibDeflate/issues"><img src="https://img.shields.io/github/issues/SafeteeWoW/LibDeflate" alt="GitHub issues"/></a></p>
+<h1>LibDeflateGuard</h1>
 
-<h1>LibDeflate</h1>
+<p>LibDeflateGuard is an independently maintained, security-hardened fork of
+<a href="https://github.com/SafeteeWoW/LibDeflate">SafeteeWoW/LibDeflate</a>. It keeps the
+proven LibDeflate compressor, RFC 1951 wire format, and established World of
+Warcraft codecs while adding strict resource limits and stable, non-throwing
+decode failures.</p>
 
-<p><a name="Pure_Lua_compressor_and_decompressor_with_high_compression_ratio_using_DEFLATE_zlib_format_"></a></p>
-<h2>Pure Lua compressor and decompressor with high compression ratio using DEFLATE/zlib format.</h2>
+<p>The first maintained release is based on upstream LibDeflate
+<code>1.0.2-release</code>, commit <code>afc3b78d12fb3bcfa6b21e5332031ad3d7572e19</code>.
+The original history, zlib license, copyright, and source attribution are
+preserved.</p>
 
-<p>Copyright (C) 2018-2021 Haoqian He</p>
-
-<p><a name="Introduction"></a></p>
-<h2>Introduction</h2>
-
-<p>LibDeflate is pure Lua compressor and decompressor with high compression ratio,
-which compresses almost as good as <a href="https://github.com/madler/zlib">zlib</a>. The
-purpose of this project is to give a reasonable good compression when you only
-have access to a pure Lua environment, without accessing to Lua C bindings or
-any external Lua libraries. LibDeflate does not have any dependencies except you
-need to have a working Lua interpreter.</p>
-
-<p>LibDeflate uses the following compression formats:</p>
-
-<ol>
-    <li><em>DEFLATE</em>, as defined by the specification
-    <a href="https://tools.ietf.org/html/rfc1951">RFC1951</a>. DEFLATE is the default compression method of ZIP.</li>
-    <li><em>zlib</em>, as defined by the specification
-    <a href="https://tools.ietf.org/html/rfc1950">RFC1950</a>.
-    zlib format uses DEFLATE formats to compress data and adds several bytes as
-    headers and checksum.</li>
-</ol>
-
-<p>A simple C program utilizing <a href="https://github.com/madler/zlib">zlib</a> should be
-compatible with LibDeflate. If you are not sure how to write this program,
-goto the <a href="https://github.com/madler/zlib">zlib</a> repository, or read
-<a href="https://github.com/SafeteeWoW/LibDeflate/blob/master/tests/zdeflate.c">tests/zdeflate.c</a> in this repository.</p>
-
-<p><a name="Supported_Lua_Versions"></a></p>
-<h2>Supported Lua Versions</h2>
-
-<p>LibDeflate supports and is fully tested under Lua 5.1/5.2/5.3/5.4, LuaJIT 2.0/2.1,
-for Linux, MaxOS and Windows.
-Click the CI badge on the top of this README for the test results.
-Click the CodeCov badge to see the test coverage (should be 100%).</p>
-
-<p><a name="Documentation"></a></p>
-<h2>Documentation</h2>
-
-<p><a href="https://safeteewow.github.io/LibDeflate/source/LibDeflate.lua.html">Documentation</a> is hosted on Github.
-Beside run as a library, LibDeflate can also be run directly in commmandline.
-See the documentation for detail.</p>
-
-<p><a name="Limitation"></a></p>
-<h2>Limitation</h2>
-
-<p>Though many performance optimization has been done in the source code, as a
-pure Lua implementation, the compression speed of LibDeflate is significantly
-slower than a C compressor. LibDeflate aims to compress small files, and it is
-suggested to not compress files with the order of several Megabytes. If you
-need to compress files hundreds of MetaBytes, please use a C compressor, or a
-Lua compressor with C binding.</p>
-
-<p><a name="Performance"></a></p>
-<h2>Performance</h2>
-
-<p>Below is a simple benchmark compared with another pure Lua compressor <a href="https://www.wowace.com/projects/libcompress">LibCompress</a>.
-More benchmarks can be viewed in the <a href="https://safeteewow.github.io/LibDeflate/topics/benchmark.md.html">documentation</a>.</p>
+<p><a name="What_is_different"></a></p>
+<h2>What is different</h2>
 
 <ul>
-    <li>Interpreter: Lua 5.1.5</li>
-    <li>Input data: <a href="https://raw.githubusercontent.com/SafeteeWoW/LibDeflate/master/tests/data/warlockWeakAuras.txt">WeakAuras2 String</a>, Size: 132462 bytes</li>
+    <li>The module is named and loaded as <code>LibDeflateGuard</code>.</li>
+    <li>It never looks up or registers <code>LibDeflate</code> through LibStub.</li>
+    <li>It never creates <code>_G.LibDeflate</code> or <code>_G.LibDeflateGuard</code>.</li>
+    <li>Every load creates the private module table returned by
+    <code>require(&quot;LibDeflateGuard&quot;)</code> or stores it in the loading addon's private
+    namespace.</li>
+    <li>Deflate and zlib decoders enforce compressed-input, output, block, Huffman
+    symbol, and deterministic work-unit limits.</li>
+    <li>Codec decoders enforce their own input cap, because they run before any
+    decompression budget applies.</li>
+    <li>Decoder and channel-decode failures return stable symbolic error codes,
+    including for malformed or wrongly typed untrusted input.</li>
+    <li>Raw Deflate and zlib members reject complete trailing bytes.</li>
+    <li>World of Warcraft addon-channel decoding rejects dangling, unknown, and
+    otherwise non-canonical escape sequences.</li>
+    <li>Custom-codec escape input and print-codec terminal padding must use the
+    canonical form produced by their encoders.</li>
+    <li>A supplied zlib dictionary is usable only when the member declares FDICT and
+    its DICTID matches.</li>
 </ul>
 
+<p>LibDeflateGuard does not replace an installed stock LibDeflate. An application
+can load both modules without either one mutating the other.</p>
 
-<table>
-<thead>
-<tr>
-<th></th>
-<th>LibDeflate</th>
-<th>LibDeflate</th>
-<th>LibDeflate</th>
-<th>LibCompress</th>
-<th>LibCompress</th>
-<th>LibCompress</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td></td>
-<td>CompressDeflate Level 1</td>
-<td>CompressDeflate Level 5</td>
-<td>CompressDeflate Level 8</td>
-<td>Compress</td>
-<td>CompressLZW</td>
-<td>CompressHuffman</td>
-</tr>
-<tr>
-<td>compress ratio</td>
-<td>3.15</td>
-<td>3.68</td>
-<td>3.71</td>
-<td>1.36</td>
-<td>1.20</td>
-<td>1.36</td>
-</tr>
-<tr>
-<td>compress time(ms)</td>
-<td>68</td>
-<td>116</td>
-<td>189</td>
-<td>111</td>
-<td>52</td>
-<td>50</td>
-</tr>
-<tr>
-<td>decompress time(ms)</td>
-<td>48</td>
-<td>30</td>
-<td>27</td>
-<td>55</td>
-<td>26</td>
-<td>59</td>
-</tr>
-<tr>
-<td>compress+decompress time(ms)</td>
-<td>116</td>
-<td>145</td>
-<td>216</td>
-<td>166</td>
-<td>78</td>
-<td>109</td>
-</tr>
-</tbody>
-</table>
+<p><a name="Loading_the_private_module"></a></p>
+<h2>Loading the private module</h2>
+
+<p>Standalone Lua:</p>
 
 
-<p>LibDeflate with compression level 1 compresses as fast as LibCompress, but already produces significantly smaller data than LibCompress. High compression level takes a bit more time to get better compression.</p>
+<pre>
+<span class="keyword">local</span> LibDeflateGuard = <span class="global">require</span>(<span class="string">"LibDeflateGuard"</span>)
+</pre>
 
-<p><a name="Download_And_Install"></a></p>
-<h2>Download And Install</h2>
+
+<p>For a World of Warcraft addon, embed <a href="../source/LibDeflateGuard.lua.html#">LibDeflateGuard.lua</a> in the consuming
+addon and load it before the consumer file. WoW passes the same private addon
+table to both files:</p>
+
+
+<pre>
+<span class="keyword">local</span> addon_name, private = ...
+<span class="keyword">local</span> LibDeflateGuard = private.LibDeflateGuard
+</pre>
+
+
+<p><code>LibDeflateGuard.xml</code> is supplied for embedded XML loading. Installing
+LibDeflateGuard as a separate shared addon is not the supported integration
+model because this fork deliberately exposes no global or LibStub identity.
+Release archives are embed-source bundles for copying into the consuming
+project. They intentionally contain no standalone addon TOC.</p>
+
+<p><a name="Safe_decoding"></a></p>
+<h2>Safe decoding</h2>
+
+
+<pre>
+<span class="keyword">local</span> output, decode_error = LibDeflateGuard:DecompressDeflate(compressed)
+<span class="keyword">if</span> <span class="keyword">not</span> output <span class="keyword">then</span>
+  <span class="global">print</span>(<span class="string">"Rejected:"</span>, decode_error)
+<span class="keyword">end</span>
+</pre>
+
+
+<p>The same contract applies to:</p>
 
 <ul>
-    <li><p>The <a href="https://github.com/SafeteeWoW/LibDeflate">official repository</a> locates on Github.
-    <a href="https://github.com/SafeteeWoW/LibDeflate/blob/master/LibDeflate.lua">LibDeflate.lua</a> is the only file of LibDeflate. Copy the file
-    to your LUA_PATH to install it.</p></li>
-    <li><p>To download as a World of Warcraft library, goto <a href="https://wow.curseforge.com/projects/libdeflate">LibDeflate Curseforge Page</a> or <a href="https://www.wowinterface.com/downloads/info25453-LibDeflate.html">LibDeflate WoWInterface Page</a></p></li>
-    <li><p>You can also install via Luarocks using the command "luarocks install libdeflate"</p></li>
-    <li><p>All packages files can also in downloaded in the <a href="https://github.com/SafeteeWoW/LibDeflate/releases">Github Release Page</a></p></li>
-    <li><p>To use after installation, <code>require(&quot;LibDeflate&quot;)</code> (case sensitive) in your Lua interpreter,
-    or <code>LibStub:GetLibrary(&quot;LibDeflate&quot;)</code> (case sensitive) for World of Warcraft.</p></li>
+    <li><code>DecompressDeflate(str, limits)</code></li>
+    <li><code>DecompressDeflateWithDict(str, dictionary, limits)</code></li>
+    <li><code>DecompressZlib(str, limits)</code></li>
+    <li><code>DecompressZlibWithDict(str, dictionary, limits)</code></li>
 </ul>
 
-<p><a name="Usage"></a></p>
-<h2>Usage</h2>
+<p>Success returns the decoded string and numeric status <code>0</code>, preserving the
+upstream success tuple. Failure returns <code>nil</code> and one of the strings in
+<code>LibDeflateGuard.ERRORS</code>. The stable error codes include
+invalid arguments, input/output/work/block/symbol limit exhaustion, trailing
+data, truncation, invalid streams, checksum or dictionary failures, invalid
+codec input, and contained internal exceptions.</p>
 
-<pre><code> local LibDeflate
- if LibStub then -- You are using LibDeflate as WoW addon
-    LibDeflate = LibStub:GetLibrary("LibDeflate")
- else
-    LibDeflate = require("LibDeflate")
- end
-
- local example_input = "12123123412345123456123456712345678123456789"
-
- --- Compress using raw deflate format
- local compress_deflate = LibDeflate:CompressDeflate(example_input)
-
- -- decompress
- local decompress_deflate = LibDeflate:DecompressDeflate(compress_deflate)
-
- -- Check if the first return value of DecompressXXXX is non-nil to know if the
- -- decompression succeeds.
- if decompress_deflate == nil then
-    error("Decompression fails.")
- else
-    -- Decompression succeeds.
-    assert(example_input == decompress_deflate)
- end
+<p>All limits are positive integer byte or work counts. Omitted keys use the
+defaults. Two presets ship with the library:</p>
 
 
- -- To transmit through WoW addon channel, data must be encoded so NULL ("\000")
- -- is not in the data.
- local data_to_trasmit_WoW_addon = LibDeflate:EncodeForWoWAddonChannel(
-    compress_deflate)
- -- When the receiver gets the data, decoded it first.
- local data_decoded_WoW_addon = LibDeflate:DecodeForWoWAddonChannel(
-    data_to_trasmit_WoW_addon)
- -- Then decomrpess it
- local decompress_deflate = LibDeflate:DecompressDeflate(data_decoded_WoW_addon)
-
- assert(decompress_deflate == example_input)
-
- -- The compressed output is not printable. EncodeForPrint will convert to
- -- a printable format, in case you want to export to the user to
- -- copy and paste. This encoding will make the data 25% bigger.
- local printable_compressed = LibDeflate:EncodeForPrint(compress_deflate)
-
- -- DecodeForPrint to convert back.
- -- DecodeForPrint will remove prefixed and trailing control or space characters
- -- in the string before decode it.
- assert(LibDeflate:DecodeForPrint(printable_compressed) == compress_deflate)
-</code></pre>
+<pre>
+LibDeflateGuard.LIMIT_PRESETS = {
+  addon = {                      <span class="comment">-- the default
+</span>    max_input_bytes = <span class="number">64</span> * <span class="number">1024</span>,
+    max_output_bytes = <span class="number">512</span> * <span class="number">1024</span>,
+    max_blocks = <span class="number">256</span>,
+    max_symbols = <span class="number">750000</span>,
+    max_work_units = <span class="number">1500000</span>,
+  },
+  generous = {
+    max_input_bytes = <span class="number">1024</span> * <span class="number">1024</span>,
+    max_output_bytes = <span class="number">8</span> * <span class="number">1024</span> * <span class="number">1024</span>,
+    max_blocks = <span class="number">4096</span>,
+    max_symbols = <span class="number">10000000</span>,
+    max_work_units = <span class="number">25000000</span>,
+  },
+}
+</pre>
 
 
-<p>See Full examples in <a href="https://github.com/SafeteeWoW/LibDeflate/blob/master/examples/example.lua">examples/example.lua</a></p>
+<p><code>addon</code> is the default because a decode on a game client runs on the frame
+thread, where a rejected message must not be felt. <code>generous</code> is for a server
+or desktop tool that can afford a longer stall:</p>
 
-<p><a name="License"></a></p>
-<h2>License</h2>
 
-<p>LibDeflate is licensed under the zlib license. See LICENSE.txt.
-The "tests" folder in the repository contains some third party code and data.
-Their original licenses shall be complied when used.</p>
+<pre>
+<span class="keyword">local</span> output, decode_error =
+  LibDeflateGuard:DecompressDeflate(compressed,
+                                    LibDeflateGuard.LIMIT_PRESETS.generous)
+</pre>
 
-<p><a name="Credits_and_Disclaimer"></a></p>
-<h2>Credits and Disclaimer</h2>
 
-<p>This library rewrites the code from the algorithm and the ideas of the following projects,
-and uses their code to help to test the correctness of this library,
-but their code is not included directly in the library itself.
-Their original licenses shall be complied when used.</p>
+<p>A caller can also supply any table of its own; omitted keys fall back to the
+<code>addon</code> values. <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code> are inspection copies.
+Mutating them does not alter the private defaults enforced by the decoder.</p>
+
+<p>These are per-call budgets. Bounding a <em>stream</em> of messages needs the caller's
+transport context and remains the caller's job.</p>
+
+<p><code>max_symbols</code> counts every Huffman decode attempt, including dynamic-header,
+literal/length, distance, and end-of-block symbols. <code>max_work_units</code> counts
+blocks, Huffman symbols, output bytes, and dynamic-table entries. It is a
+deterministic operation budget, not a wall-clock deadline.</p>
+
+<p>The complete input string counts toward <code>max_input_bytes</code>. A valid compressed
+member followed by one or more complete bytes fails with <code>trailing_data</code>.
+Unused padding bits in the final raw Deflate byte remain valid RFC 1951
+padding.</p>
+
+<p><code>max_output_bytes</code> bounds the decoded string, not the Lua heap. Peak heap
+during a decode measures roughly 3 to 4 times the decoded size, because the
+flushed output chunks, the final concatenated string, and the 32768-byte
+sliding window are all live at the same time. Size the policy against that
+multiplier: the default 512 KiB output cap implies a transient peak of roughly
+1.5 to 2 MiB, and the <code>generous</code> 8 MiB cap implies roughly 26 to 32 MiB.</p>
+
+<p><a name="Compression_and_codecs"></a></p>
+<h2>Compression and codecs</h2>
+
+<p>The original compressor and dictionary APIs remain available:</p>
+
+<ul>
+    <li><code>CompressDeflate</code> and <code>CompressDeflateWithDict</code></li>
+    <li><code>CompressZlib</code> and <code>CompressZlibWithDict</code></li>
+    <li><code>CreateDictionary</code> and <code>Adler32</code></li>
+</ul>
+
+<p>Compression output remains wire-compatible with LibDeflate and RFC 1951.
+Compression and dictionary construction are trusted, programmer-facing APIs
+and retain their original argument-error behavior.</p>
+
+<p>The original codec names are retained:</p>
+
+<ul>
+    <li><code>EncodeForWoWAddonChannel</code> and <code>DecodeForWoWAddonChannel</code></li>
+    <li><code>EncodeForWoWChatChannel</code> and <code>DecodeForWoWChatChannel</code></li>
+    <li><code>EncodeForPrint</code> and <code>DecodeForPrint</code></li>
+    <li><code>CreateCodec</code></li>
+</ul>
+
+<p>The print codec stays compatible with existing LibDeflate consumers, including
+canonical RCLootCouncil export data. Previously tolerated nonzero unused bits
+in a final print-codec group are rejected as <code>invalid_print</code>. Decode methods
+return <code>nil, error_code</code> on invalid untrusted input. Encode methods remain
+programmer-facing and retain the original argument-error behavior.</p>
+
+<p>Every decode method takes an optional input cap as its last argument:</p>
+
+
+<pre>
+<span class="keyword">local</span> compressed, decode_error = LibDeflateGuard:DecodeForPrint(pasted, <span class="number">65536</span>)
+</pre>
+
+
+<p>A codec decode runs before any decompression budget applies, so it carries its
+own cap rather than inheriting one. The decode is linear, so an oversized input
+is a stall rather than an amplification, but it is still unbounded work on
+attacker-supplied bytes. The defaults are derived from the decompress input
+cap rather than guessed, and are exposed for inspection:</p>
+
+
+<pre>
+LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
+  print_max_input_bytes = <span class="number">87381</span>,    <span class="comment">-- 4/3 * max_input_bytes
+</span>  channel_max_input_bytes = <span class="number">65536</span>,  <span class="comment">-- max_input_bytes
+</span>}
+</pre>
+
+
+<p>The print codec emits 0.75 bytes per input byte, so anything above 4/3 of
+<code>max_input_bytes</code> cannot produce a member that a default-limits decompress
+would accept. The channel codecs never grow their input, so their cap is
+<code>max_input_bytes</code> itself. A caller that raises <code>max_input_bytes</code> must raise
+these to match.</p>
+
+<p><a name="Security_scope"></a></p>
+<h2>Security scope</h2>
+
+<p>This release bounds single-call decoding. It does not:</p>
+
+<ul>
+    <li>provide streaming or incremental decompression;</li>
+    <li>authenticate compressed or encoded data;</li>
+    <li>make compression safe for secrets in attacker-influenced contexts;</li>
+    <li>impose operating-system memory or wall-clock limits;</li>
+    <li>treat caller-created dictionary tables as an untrusted serialization format.</li>
+</ul>
+
+<p>The compressed input must already fit in a Lua string before the decoder can
+check its size. Callers should also enforce transport-level message limits.</p>
+
+<p>The resource limits are the part of this fork that closes a reachable
+vulnerability. The non-throwing contract is a different kind of change and is
+worth describing accurately: upstream LibDeflate already returns <code>nil</code> rather
+than raising for malformed <em>string</em> input, and a 40000-case differential fuzz
+across every decode entry point produced no upstream throw. What this fork adds
+there is a stable machine-readable reason for each failure, uniform handling of
+wrongly typed arguments, and structural containment so a future decode-path
+change cannot reintroduce a raise. That is an API contract and defense in
+depth, not a patched upstream defect.</p>
+
+<p><a name="Validation"></a></p>
+<h2>Validation</h2>
+
+<p>The focused guard suite has no external dependencies:</p>
+
+
+<pre>
+lua tests/GuardTest.lua
+luajit tests/GuardTest.lua
+</pre>
+
+
+<p>It covers stock LibDeflate/LibStub isolation, private addon export, stored,
+fixed, dynamic, and multi-block vectors, malformed/truncated/trailing members,
+all resource limits, limit presets, codec input caps, exception containment,
+all-byte addon-channel round trips, malformed escapes, zlib framing, and an
+RCLootCouncil compatibility fixture.</p>
+
+<p>It also carries two adversarial vectors that a mutation fuzzer cannot reach,
+because both are well-formed RFC 1951 rather than corrupted: a maximum
+amplification match bomb, and a dynamic-header flood that produces zero output
+while forcing a Huffman table build per block. Both assert exact budget
+boundaries rather than wall-clock bounds, so an optimisation that stops
+charging for a step fails deterministically on every interpreter.</p>
+
+<p>The randomized decode-path suite is also dependency-free:</p>
+
+
+<pre>
+lua tests/FuzzTest.lua
+</pre>
+
+
+<p>It drives every decoder with valid, truncated, mutated, trailing, and wrongly
+typed input, and with tight and invalid limit policies. A decoder must never
+throw and must always answer with a decoded string or a stable code from
+<code>ERRORS</code>. It also asserts two properties that hold without a reference
+implementation: anything a codec accepts must re-encode to exactly the bytes
+it was given, and a symbol budget below the RFC 1951 floor of one symbol per
+258 output bytes must always be refused.</p>
+
+<p>Its workload is reproducible. <code>LIBDEFLATEGUARD_FUZZ_SEED</code> selects the seed and
+<code>LIBDEFLATEGUARD_FUZZ_ITERATIONS</code> scales the iteration counts, so a longer soak
+is <code>LIBDEFLATEGUARD_FUZZ_ITERATIONS=50 lua tests/FuzzTest.lua</code>. The generator is
+a private one, not <a href="https://www.lua.org/manual/5.1/manual.html#pdf-math.random">math.random</a>, so a seed reproduces the same workload on
+every supported interpreter.</p>
+
+<p>Point <code>LIBDEFLATEGUARD_FUZZ_REFERENCE</code> at another copy of <a href="../source/LibDeflateGuard.lua.html#">LibDeflateGuard.lua</a>
+to turn the suite into a differential harness. Every public decode entry point
+must then return identical tuples from both modules, which is the check to run
+when changing the decode path:</p>
+
+
+<pre>
+git worktree add ../guard-baseline &lt;known-good-revision&gt;
+LIBDEFLATEGUARD_FUZZ_REFERENCE=../guard-baseline/LibDeflateGuard.lua \
+  lua tests/FuzzTest.lua
+</pre>
+
+
+<p>The inherited upstream suite remains in <code>tests/Test.lua</code> for compressor,
+dictionary, and broad format regression testing.</p>
+
+<p><a name="Provenance_and_upstream_updates"></a></p>
+<h2>Provenance and upstream updates</h2>
+
+<p>The maintained upstream remote is:</p>
+
+
+<pre>
+https://github.com/SafeteeWoW/LibDeflate.git
+</pre>
+
+
+<p>For an update:</p>
 
 <ol>
-    <li><a href="http://www.zlib.net">zlib</a>, by Jean-loup Gailly (compression) and Mark Adler (decompression). Licensed under <a href="http://www.zlib.net/zlib_license.html">zlib License</a>.</li>
-    <li><a href="https://github.com/madler/zlib/tree/master/contrib/puff">puff</a>, by Mark Adler. Licensed under zlib License.</li>
-    <li><a href="https://www.wowace.com/projects/libcompress">LibCompress</a>, by jjsheets and Galmok of European Stormrage (Horde). Licensed under GPLv2.</li>
-    <li><a href="https://github.com/WeakAuras/WeakAuras2">WeakAuras2</a>. Licensed under GPLv2.</li>
+    <li>Fetch upstream without rewriting or squashing its history.</li>
+    <li>Review upstream changes against the private-module boundary and every
+    decoder budget seam.</li>
+    <li>Integrate the smallest source change while preserving the zlib license and
+    upstream copyright.</li>
+    <li>Run the focused guard suite and the inherited multi-version suite.</li>
+    <li>Verify stock LibDeflate isolation plus raw Deflate, zlib, addon-channel, and
+    print-codec compatibility before release.</li>
+    <li>Record the new upstream commit and any intentional compatibility change in
+    <a href="../topics/changelog.md.html#">changelog.md</a>.</li>
 </ol>
+
+<p>Do not copy an upstream LibStub registration block into this fork. Doing so
+would reintroduce shared-library substitution and could bypass the guardrails.</p>
+
+<p><a name="License_and_credits"></a></p>
+<h2>License and credits</h2>
+
+<p>LibDeflateGuard is distributed under the zlib license in <a href="../topics/LICENSE.txt.html#">LICENSE.txt</a>.
+Copyright for the original LibDeflate implementation remains with Haoqian He.
+This repository is plainly marked as an altered, independently maintained
+fork. Third-party test data keeps its own provenance and license notices under
+<code>tests/</code>.</p>
+
+<p>The implementation follows <a href="https://www.rfc-editor.org/rfc/rfc1951">RFC 1951</a>
+and <a href="https://www.rfc-editor.org/rfc/rfc1950">RFC 1950</a>. Original LibDeflate
+credits for zlib, puff, LibCompress, and WeakAuras remain in the source header.</p>
 
 
 </div> <!-- id="content" -->

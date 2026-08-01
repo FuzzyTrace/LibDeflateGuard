@@ -3,7 +3,7 @@
 <html>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
 <head>
-    <title>LibDeflate documentation</title>
+    <title>LibDeflateGuard documentation</title>
     <link rel="stylesheet" href="../ldoc.css" type="text/css" />
 </head>
 <body>
@@ -24,7 +24,7 @@
 
 <div id="navigation">
 <br/>
-<h1>LibDeflate</h1>
+<h1>LibDeflateGuard</h1>
 
 <ul>
   <li><a href="../index.html">Index</a></li>
@@ -39,7 +39,7 @@
 
 <h2>Source</h2>
 <ul class="nowrap">
-  <li><strong>LibDeflate.lua</strong></li>
+  <li><strong>LibDeflateGuard.lua</strong></li>
 </ul>
 <h2>Topics</h2>
 <ul class="">
@@ -57,8 +57,8 @@
 
 <div id="content">
 
-<h1>File <code>LibDeflate.lua</code></h1>
-<p>LibDeflate 1.0.2-release <br>
+<h1>File <code>LibDeflateGuard.lua</code></h1>
+<p>LibDeflateGuard 1.1.0 <br>
 Pure Lua compressor and decompressor with high compression ratio using
 DEFLATE/zlib format.</p>
 <p>
@@ -68,6 +68,10 @@ DEFLATE/zlib format.</p>
     <ul>
         <li><strong>Copyright</strong>: LibDeflate &lt;2018-2021> Haoqian He</li>
         <li><strong>License</strong>:  zlib License</p>
+
+<p>This is an independently maintained, security-hardened fork of LibDeflate.
+The original implementation and copyright remain attributed to Haoqian He.
+Fork maintenance: https://github.com/FuzzyTrace/LibDeflateGuard</p>
 
 <p>This library is implemented according to the following specifications. <br>
 Report a bug if LibDeflate is not fully compliant with those specs. <br>
@@ -80,10 +84,10 @@ https://tools.ietf.org/html/rfc1950 <br></p>
 <p>This library requires Lua 5.1/5.2/5.3/5.4 interpreter or LuaJIT v2.0+. <br>
 This library does not have any dependencies. <br>
 <br>
-This file "LibDeflate.lua" is the only source file of
+This file "LibDeflateGuard.lua" is the only source file of
 the library. <br>
 Submit suggestions or report bugs to
-https://github.com/safeteeWow/LibDeflate/issues</li>
+https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
         <li><strong>Author</strong>: Haoqian He (Github: SafeteeWoW; World of Warcraft: Safetyy-Illidan(US))</li>
     </ul>
 
@@ -91,72 +95,68 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 <h2><a href="#Functions">Functions</a></h2>
 <table class="function_list">
 	<tr>
-	<td class="name" ><a href="#LibDeflate:Adler32">LibDeflate:Adler32 (str)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:Adler32">LibDeflateGuard:Adler32 (str)</a></td>
 	<td class="summary">Calculate the Adler-32 checksum of the string.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:CompressDeflate">LibDeflate:CompressDeflate (str, configs)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:CompressDeflate">LibDeflateGuard:CompressDeflate (str, configs)</a></td>
 	<td class="summary">Compress using the raw deflate format.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:CompressDeflateWithDict">LibDeflate:CompressDeflateWithDict (str, dictionary, configs)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:CompressDeflateWithDict">LibDeflateGuard:CompressDeflateWithDict (str, dictionary, configs)</a></td>
 	<td class="summary">Compress using the raw deflate format with a preset dictionary.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:CompressZlib">LibDeflate:CompressZlib (str, configs)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:CompressZlib">LibDeflateGuard:CompressZlib (str, configs)</a></td>
 	<td class="summary">Compress using the zlib format.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:CompressZlibWithDict">LibDeflate:CompressZlibWithDict (str, dictionary, configs)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:CompressZlibWithDict">LibDeflateGuard:CompressZlibWithDict (str, dictionary, configs)</a></td>
 	<td class="summary">Compress using the zlib format with a preset dictionary.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:CreateCodec">LibDeflate:CreateCodec (reserved_chars, escape_chars, map_chars)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:CreateCodec">LibDeflateGuard:CreateCodec (reserved_chars, escape_chars, map_chars)</a></td>
 	<td class="summary">Create a custom codec with encoder and decoder.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:CreateDictionary">LibDeflate:CreateDictionary (str, strlen, adler32)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:CreateDictionary">LibDeflateGuard:CreateDictionary (str, strlen, adler32)</a></td>
 	<td class="summary">Create a preset dictionary.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:DecodeForPrint">LibDeflate:DecodeForPrint (str)</a></td>
-	<td class="summary">Decode the printable string produced by LibDeflate:EncodeForPrint.</td>
+	<td class="name" ><a href="#LibDeflateGuard:DecodeForWoWAddonChannel">LibDeflateGuard:DecodeForWoWAddonChannel (str)</a></td>
+	<td class="summary">Decode the string produced by LibDeflateGuard:EncodeForWoWAddonChannel</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:DecodeForWoWAddonChannel">LibDeflate:DecodeForWoWAddonChannel (str)</a></td>
-	<td class="summary">Decode the string produced by LibDeflate:EncodeForWoWAddonChannel</td>
+	<td class="name" ><a href="#LibDeflateGuard:DecodeForWoWChatChannel">LibDeflateGuard:DecodeForWoWChatChannel (str)</a></td>
+	<td class="summary">Decode the string produced by LibDeflateGuard:EncodeForWoWChatChannel.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:DecodeForWoWChatChannel">LibDeflate:DecodeForWoWChatChannel (str)</a></td>
-	<td class="summary">Decode the string produced by LibDeflate:EncodeForWoWChatChannel.</td>
-	</tr>
-	<tr>
-	<td class="name" ><a href="#LibDeflate:DecompressDeflate">LibDeflate:DecompressDeflate (str)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:DecompressDeflate">LibDeflateGuard:DecompressDeflate (str)</a></td>
 	<td class="summary">Decompress a raw deflate compressed data.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:DecompressDeflateWithDict">LibDeflate:DecompressDeflateWithDict (str, dictionary)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:DecompressDeflateWithDict">LibDeflateGuard:DecompressDeflateWithDict (str, dictionary)</a></td>
 	<td class="summary">Decompress a raw deflate compressed data with a preset dictionary.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:DecompressZlib">LibDeflate:DecompressZlib (str)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:DecompressZlib">LibDeflateGuard:DecompressZlib (str)</a></td>
 	<td class="summary">Decompress a zlib compressed data.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:DecompressZlibWithDict">LibDeflate:DecompressZlibWithDict (str, dictionary)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:DecompressZlibWithDict">LibDeflateGuard:DecompressZlibWithDict (str, dictionary)</a></td>
 	<td class="summary">Decompress a zlib compressed data with a preset dictionary.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:EncodeForPrint">LibDeflate:EncodeForPrint (str)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:EncodeForPrint">LibDeflateGuard:EncodeForPrint (str)</a></td>
 	<td class="summary">Encode the string to make it printable.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:EncodeForWoWAddonChannel">LibDeflate:EncodeForWoWAddonChannel (str)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:EncodeForWoWAddonChannel">LibDeflateGuard:EncodeForWoWAddonChannel (str)</a></td>
 	<td class="summary">Encode the string to make it ready to be transmitted in World of
  Warcraft addon channel.</td>
 	</tr>
 	<tr>
-	<td class="name" ><a href="#LibDeflate:EncodeForWoWChatChannel">LibDeflate:EncodeForWoWChatChannel (str)</a></td>
+	<td class="name" ><a href="#LibDeflateGuard:EncodeForWoWChatChannel">LibDeflateGuard:EncodeForWoWChatChannel (str)</a></td>
 	<td class="summary">Encode the string to make it ready to be transmitted in World of
  Warcraft chat channel.</td>
 	</tr>
@@ -181,8 +181,8 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <dl class="function">
     <dt>
-    <a name = "LibDeflate:Adler32"></a>
-    <strong>LibDeflate:Adler32 (str)</strong>
+    <a name = "LibDeflateGuard:Adler32"></a>
+    <strong>LibDeflateGuard:Adler32 (str)</strong>
     </dt>
     <dd>
     Calculate the Adler-32 checksum of the string.  <br>
@@ -209,8 +209,8 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
 </dd>
     <dt>
-    <a name = "LibDeflate:CompressDeflate"></a>
-    <strong>LibDeflate:CompressDeflate (str, configs)</strong>
+    <a name = "LibDeflateGuard:CompressDeflate"></a>
+    <strong>LibDeflateGuard:CompressDeflate (str, configs)</strong>
     </dt>
     <dd>
     Compress using the raw deflate format.
@@ -243,15 +243,15 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <li><a href="../source/LibDeflate.lua.html#compression_configs">compression_configs</a></li>
-         <li><a href="../source/LibDeflate.lua.html#LibDeflate:DecompressDeflate">LibDeflate:DecompressDeflate</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#compression_configs">compression_configs</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:DecompressDeflate">LibDeflateGuard:DecompressDeflate</a></li>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:CompressDeflateWithDict"></a>
-    <strong>LibDeflate:CompressDeflateWithDict (str, dictionary, configs)</strong>
+    <a name = "LibDeflateGuard:CompressDeflateWithDict"></a>
+    <strong>LibDeflateGuard:CompressDeflateWithDict (str, dictionary, configs)</strong>
     </dt>
     <dd>
     Compress using the raw deflate format with a preset dictionary.
@@ -264,7 +264,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
         </li>
         <li><span class="parameter">dictionary</span>
          [table] The preset dictionary produced by
- LibDeflate:CreateDictionary
+ LibDeflateGuard:CreateDictionary
         </li>
         <li><span class="parameter">configs</span>
          [table/nil] The configuration table to control the compression
@@ -288,16 +288,16 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <li><a href="../source/LibDeflate.lua.html#compression_configs">compression_configs</a></li>
-         <li><a href="../source/LibDeflate.lua.html#LibDeflate:CreateDictionary">LibDeflate:CreateDictionary</a></li>
-         <li><a href="../source/LibDeflate.lua.html#LibDeflate:DecompressDeflateWithDict">LibDeflate:DecompressDeflateWithDict</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#compression_configs">compression_configs</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:CreateDictionary">LibDeflateGuard:CreateDictionary</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:DecompressDeflateWithDict">LibDeflateGuard:DecompressDeflateWithDict</a></li>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:CompressZlib"></a>
-    <strong>LibDeflate:CompressZlib (str, configs)</strong>
+    <a name = "LibDeflateGuard:CompressZlib"></a>
+    <strong>LibDeflateGuard:CompressZlib (str, configs)</strong>
     </dt>
     <dd>
     Compress using the zlib format.
@@ -327,15 +327,15 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <li><a href="../source/LibDeflate.lua.html#compression_configs">compression_configs</a></li>
-         <li><a href="../source/LibDeflate.lua.html#LibDeflate:DecompressZlib">LibDeflate:DecompressZlib</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#compression_configs">compression_configs</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:DecompressZlib">LibDeflateGuard:DecompressZlib</a></li>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:CompressZlibWithDict"></a>
-    <strong>LibDeflate:CompressZlibWithDict (str, dictionary, configs)</strong>
+    <a name = "LibDeflateGuard:CompressZlibWithDict"></a>
+    <strong>LibDeflateGuard:CompressZlibWithDict (str, dictionary, configs)</strong>
     </dt>
     <dd>
     Compress using the zlib format with a preset dictionary.
@@ -348,7 +348,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
         </li>
         <li><span class="parameter">dictionary</span>
          [table] A preset dictionary produced
- by LibDeflate:CreateDictionary()
+ by LibDeflateGuard:CreateDictionary()
         </li>
         <li><span class="parameter">configs</span>
          [table/nil] The configuration table to control the compression
@@ -369,16 +369,16 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <li><a href="../source/LibDeflate.lua.html#compression_configs">compression_configs</a></li>
-         <li><a href="../source/LibDeflate.lua.html#LibDeflate:CreateDictionary">LibDeflate:CreateDictionary</a></li>
-         <li><a href="../source/LibDeflate.lua.html#LibDeflate:DecompressZlibWithDict">LibDeflate:DecompressZlibWithDict</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#compression_configs">compression_configs</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:CreateDictionary">LibDeflateGuard:CreateDictionary</a></li>
+         <li><a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:DecompressZlibWithDict">LibDeflateGuard:DecompressZlibWithDict</a></li>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:CreateCodec"></a>
-    <strong>LibDeflate:CreateCodec (reserved_chars, escape_chars, map_chars)</strong>
+    <a name = "LibDeflateGuard:CreateCodec"></a>
+    <strong>LibDeflateGuard:CreateCodec (reserved_chars, escape_chars, map_chars)</strong>
     </dt>
     <dd>
     Create a custom codec with encoder and decoder.  <br>
@@ -388,7 +388,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
  localization into account. One byte (0-255) in the string is exactly one
  character (0-255).
  Credits to LibCompress.
- The code has been rewritten by the author of LibDeflate. <br>
+ The code was rewritten by upstream LibDeflate author Haoqian He. <br>
 
 
     <h3>Parameters:</h3>
@@ -436,7 +436,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
     <ul>
         <pre class="example"><span class="comment">-- Create an encoder/decoder that maps all "\000" to "\003",
 </span><span class="comment">-- and escape "\001" (and "\002" and "\003") properly
-</span><span class="keyword">local</span> codec = LibDeflate:CreateCodec(<span class="string">"\000\001"</span>, <span class="string">"\002"</span>, <span class="string">"\003"</span>)
+</span><span class="keyword">local</span> codec = LibDeflateGuard:CreateCodec(<span class="string">"\000\001"</span>, <span class="string">"\002"</span>, <span class="string">"\003"</span>)
 
 <span class="keyword">local</span> encoded = codec:Encode(SOME_STRING)
 <span class="comment">-- "encoded" does not contain "\000" or "\001"
@@ -446,8 +446,8 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
 </dd>
     <dt>
-    <a name = "LibDeflate:CreateDictionary"></a>
-    <strong>LibDeflate:CreateDictionary (str, strlen, adler32)</strong>
+    <a name = "LibDeflateGuard:CreateDictionary"></a>
+    <strong>LibDeflateGuard:CreateDictionary (str, strlen, adler32)</strong>
     </dt>
     <dd>
     Create a preset dictionary. </p>
@@ -505,54 +505,22 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
     <ul>
         <pre class="example"><span class="keyword">local</span> dict_str = <span class="string">"1234567890"</span>
 
-<span class="comment">-- print(dict_str:len(), LibDeflate:Adler32(dict_str))
+<span class="comment">-- print(dict_str:len(), LibDeflateGuard:Adler32(dict_str))
 </span><span class="comment">-- Hardcode the print result below to verify it to avoid acciently
 </span><span class="comment">-- modification of 'str' during the program development.
 </span><span class="comment">-- string length: 10, Adler-32: 187433486,
 </span><span class="comment">-- Don't calculate string length and its Adler-32 at run-time.
 </span>
-<span class="keyword">local</span> dict = LibDeflate:CreateDictionary(dict_str, <span class="number">10</span>, <span class="number">187433486</span>)</pre>
+<span class="keyword">local</span> dict = LibDeflateGuard:CreateDictionary(dict_str, <span class="number">10</span>, <span class="number">187433486</span>)</pre>
     </ul>
 
 </dd>
     <dt>
-    <a name = "LibDeflate:DecodeForPrint"></a>
-    <strong>LibDeflate:DecodeForPrint (str)</strong>
+    <a name = "LibDeflateGuard:DecodeForWoWAddonChannel"></a>
+    <strong>LibDeflateGuard:DecodeForWoWAddonChannel (str)</strong>
     </dt>
     <dd>
-    Decode the printable string produced by LibDeflate:EncodeForPrint.
- "str" will have its prefixed and trailing control characters or space
- removed before it is decoded, so it is easier to use if "str" comes form
- user copy and paste with some prefixed or trailing spaces.
- Then decode fails if the string contains any characters cant be produced by
- LibDeflate:EncodeForPrint. That means, decode fails if the string contains a
- characters NOT one of 26 lowercase letters, 26 uppercase letters,
- 10 numbers digits, left parenthese, or right parenthese.
-
-
-    <h3>Parameters:</h3>
-    <ul>
-        <li><span class="parameter">str</span>
-         [string] The string to be decoded
-        </li>
-    </ul>
-
-    <h3>Returns:</h3>
-    <ol>
-
-        [string/nil] The decoded string if succeeds. nil if fails.
-    </ol>
-
-
-
-
-</dd>
-    <dt>
-    <a name = "LibDeflate:DecodeForWoWAddonChannel"></a>
-    <strong>LibDeflate:DecodeForWoWAddonChannel (str)</strong>
-    </dt>
-    <dd>
-    Decode the string produced by LibDeflate:EncodeForWoWAddonChannel
+    Decode the string produced by LibDeflateGuard:EncodeForWoWAddonChannel
 
 
     <h3>Parameters:</h3>
@@ -571,17 +539,17 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:EncodeForWoWAddonChannel">LibDeflate:EncodeForWoWAddonChannel</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:EncodeForWoWAddonChannel">LibDeflateGuard:EncodeForWoWAddonChannel</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:DecodeForWoWChatChannel"></a>
-    <strong>LibDeflate:DecodeForWoWChatChannel (str)</strong>
+    <a name = "LibDeflateGuard:DecodeForWoWChatChannel"></a>
+    <strong>LibDeflateGuard:DecodeForWoWChatChannel (str)</strong>
     </dt>
     <dd>
-    Decode the string produced by LibDeflate:EncodeForWoWChatChannel.
+    Decode the string produced by LibDeflateGuard:EncodeForWoWChatChannel.
 
 
     <h3>Parameters:</h3>
@@ -600,14 +568,14 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:EncodeForWoWChatChannel">LibDeflate:EncodeForWoWChatChannel</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:EncodeForWoWChatChannel">LibDeflateGuard:EncodeForWoWChatChannel</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:DecompressDeflate"></a>
-    <strong>LibDeflate:DecompressDeflate (str)</strong>
+    <a name = "LibDeflateGuard:DecompressDeflate"></a>
+    <strong>LibDeflateGuard:DecompressDeflate (str)</strong>
     </dt>
     <dd>
     Decompress a raw deflate compressed data.
@@ -627,26 +595,22 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
  data. If the decompression fails, return nil. You should check if this return
  value is non-nil to know if the decompression succeeds.</li>
         <li>
-         [integer] If the decompression succeeds, return the number of
- unprocessed bytes in the input compressed data. This return value is a
- positive integer if the input data is a valid compressed data appended by an
- arbitary non-empty string. This return value is 0 if the input data does not
- contain any extra bytes.<br>
- If the decompression fails (The first return value of this function is nil),
- this return value is undefined.</li>
+         [integer/string] If decompression succeeds, returns 0. If it fails,
+ returns a stable symbolic error from LibDeflateGuard.ERRORS. Complete
+ trailing bytes are rejected.</li>
     </ol>
 
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:CompressDeflate">LibDeflate:CompressDeflate</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:CompressDeflate">LibDeflateGuard:CompressDeflate</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:DecompressDeflateWithDict"></a>
-    <strong>LibDeflate:DecompressDeflateWithDict (str, dictionary)</strong>
+    <a name = "LibDeflateGuard:DecompressDeflateWithDict"></a>
+    <strong>LibDeflateGuard:DecompressDeflateWithDict (str, dictionary)</strong>
     </dt>
     <dd>
     Decompress a raw deflate compressed data with a preset dictionary.
@@ -659,7 +623,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
         </li>
         <li><span class="parameter">dictionary</span>
          [table] The preset dictionary used by
- LibDeflate:CompressDeflateWithDict when the compressed data is produced.
+ LibDeflateGuard:CompressDeflateWithDict when the compressed data is produced.
  Decompression and compression must use the same dictionary.
  Otherwise wrong decompressed data could be produced without generating any
  error.
@@ -673,26 +637,22 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
  data. If the decompression fails, return nil. You should check if this return
  value is non-nil to know if the decompression succeeds.</li>
         <li>
-         [integer] If the decompression succeeds, return the number of
- unprocessed bytes in the input compressed data. This return value is a
- positive integer if the input data is a valid compressed data appended by an
- arbitary non-empty string. This return value is 0 if the input data does not
- contain any extra bytes.<br>
- If the decompression fails (The first return value of this function is nil),
- this return value is undefined.</li>
+         [integer/string] If decompression succeeds, returns 0. If it fails,
+ returns a stable symbolic error from LibDeflateGuard.ERRORS. Complete
+ trailing bytes are rejected.</li>
     </ol>
 
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:CompressDeflateWithDict">LibDeflate:CompressDeflateWithDict</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:CompressDeflateWithDict">LibDeflateGuard:CompressDeflateWithDict</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:DecompressZlib"></a>
-    <strong>LibDeflate:DecompressZlib (str)</strong>
+    <a name = "LibDeflateGuard:DecompressZlib"></a>
+    <strong>LibDeflateGuard:DecompressZlib (str)</strong>
     </dt>
     <dd>
     Decompress a zlib compressed data.
@@ -712,26 +672,22 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
  data. If the decompression fails, return nil. You should check if this return
  value is non-nil to know if the decompression succeeds.</li>
         <li>
-         [integer] If the decompression succeeds, return the number of
- unprocessed bytes in the input compressed data. This return value is a
- positive integer if the input data is a valid compressed data appended by an
- arbitary non-empty string. This return value is 0 if the input data does not
- contain any extra bytes.<br>
- If the decompression fails (The first return value of this function is nil),
- this return value is undefined.</li>
+         [integer/string] If decompression succeeds, returns 0. If it fails,
+ returns a stable symbolic error from LibDeflateGuard.ERRORS. Complete
+ trailing bytes are rejected.</li>
     </ol>
 
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:CompressZlib">LibDeflate:CompressZlib</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:CompressZlib">LibDeflateGuard:CompressZlib</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:DecompressZlibWithDict"></a>
-    <strong>LibDeflate:DecompressZlibWithDict (str, dictionary)</strong>
+    <a name = "LibDeflateGuard:DecompressZlibWithDict"></a>
+    <strong>LibDeflateGuard:DecompressZlibWithDict (str, dictionary)</strong>
     </dt>
     <dd>
     Decompress a zlib compressed data with a preset dictionary.
@@ -744,7 +700,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
         </li>
         <li><span class="parameter">dictionary</span>
          [table] The preset dictionary used by
- LibDeflate:CompressDeflateWithDict when the compressed data is produced.
+ LibDeflateGuard:CompressDeflateWithDict when the compressed data is produced.
  Decompression and compression must use the same dictionary.
  Otherwise wrong decompressed data could be produced without generating any
  error.
@@ -758,33 +714,29 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
  data. If the decompression fails, return nil. You should check if this return
  value is non-nil to know if the decompression succeeds.</li>
         <li>
-         [integer] If the decompression succeeds, return the number of
- unprocessed bytes in the input compressed data. This return value is a
- positive integer if the input data is a valid compressed data appended by an
- arbitary non-empty string. This return value is 0 if the input data does not
- contain any extra bytes.<br>
- If the decompression fails (The first return value of this function is nil),
- this return value is undefined.</li>
+         [integer/string] If decompression succeeds, returns 0. If it fails,
+ returns a stable symbolic error from LibDeflateGuard.ERRORS. Complete
+ trailing bytes are rejected.</li>
     </ol>
 
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:CompressZlibWithDict">LibDeflate:CompressZlibWithDict</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:CompressZlibWithDict">LibDeflateGuard:CompressZlibWithDict</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:EncodeForPrint"></a>
-    <strong>LibDeflate:EncodeForPrint (str)</strong>
+    <a name = "LibDeflateGuard:EncodeForPrint"></a>
+    <strong>LibDeflateGuard:EncodeForPrint (str)</strong>
     </dt>
     <dd>
     Encode the string to make it printable.  <br></p>
 
 <p> Credit to WeakAuras2, this function is equivalant to the implementation
  it is using right now. <br>
- The code has been rewritten by the author of LibDeflate. <br>
+ The code was rewritten by upstream LibDeflate author Haoqian He. <br>
  The encoded string will be 25% larger than the origin string. However, every
  single byte of the encoded string will be one of 64 printable ASCII
  characters, which are can be easier copied, pasted and displayed.
@@ -810,8 +762,8 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
 </dd>
     <dt>
-    <a name = "LibDeflate:EncodeForWoWAddonChannel"></a>
-    <strong>LibDeflate:EncodeForWoWAddonChannel (str)</strong>
+    <a name = "LibDeflateGuard:EncodeForWoWAddonChannel"></a>
+    <strong>LibDeflateGuard:EncodeForWoWAddonChannel (str)</strong>
     </dt>
     <dd>
     Encode the string to make it ready to be transmitted in World of
@@ -835,14 +787,14 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:DecodeForWoWAddonChannel">LibDeflate:DecodeForWoWAddonChannel</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:DecodeForWoWAddonChannel">LibDeflateGuard:DecodeForWoWAddonChannel</a>
     </ul>
 
 
 </dd>
     <dt>
-    <a name = "LibDeflate:EncodeForWoWChatChannel"></a>
-    <strong>LibDeflate:EncodeForWoWChatChannel (str)</strong>
+    <a name = "LibDeflateGuard:EncodeForWoWChatChannel"></a>
+    <strong>LibDeflateGuard:EncodeForWoWChatChannel (str)</strong>
     </dt>
     <dd>
     Encode the string to make it ready to be transmitted in World of
@@ -866,7 +818,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>See also:</h3>
     <ul>
-         <a href="../source/LibDeflate.lua.html#LibDeflate:DecodeForWoWChatChannel">LibDeflate:DecodeForWoWChatChannel</a>
+         <a href="../source/LibDeflateGuard.lua.html#LibDeflateGuard:DecodeForWoWChatChannel">LibDeflateGuard:DecodeForWoWChatChannel</a>
     </ul>
 
 
@@ -889,7 +841,7 @@ https://github.com/safeteeWow/LibDeflate/issues</li>
 
     <h3>Usage:</h3>
     <ul>
-        <pre class="example">lua LibDeflate.lua [OPTION] [INPUT] [OUTPUT]
+        <pre class="example">lua LibDeflateGuard.lua [OPTION] [INPUT] [OUTPUT]
 -<span class="number">0</span>    store only. no compression.
 -<span class="number">1</span>    fastest compression.
 -<span class="number">9</span>    slowest <span class="keyword">and</span> best compression.
