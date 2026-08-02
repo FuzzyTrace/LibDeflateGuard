@@ -64,7 +64,19 @@ jobs:
       - name: Install luaunit
         run: |
           . .github/workflows/script/setenv_lua.ps1
-          luarocks install luaunit 3.4-1
+          # Same missing retry as the unix job: luarocks fetches the rockspec
+          # from luarocks.org itself and does not retry, and a transient
+          # failure there crashes LuaRocks inside its own error path rather
+          # than reporting a network error. luarocks is a native command, so
+          # failure sets LASTEXITCODE instead of throwing.
+          foreach ($attempt in 1..5) {
+            luarocks install luaunit 3.4-1
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "luarocks install failed on attempt $attempt"
+            Start-Sleep -Seconds ($attempt * 10)
+          }
+          Write-Host "luarocks install luaunit failed after 5 attempts"
+          exit 1
 
       - name: Run tests
         run: |
