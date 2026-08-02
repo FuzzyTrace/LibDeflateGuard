@@ -1,0 +1,199 @@
+# Roadmap after v1.1.2
+
+Ordered work items agreed after the v1.1.2 regression fixes. Each is a
+separate pull request. Do them in order: every item assumes the ones above it
+have landed.
+
+GitHub issues are disabled on this repository, so this file is the tracking
+artifact. Tick items off here as they land.
+
+## Status
+
+| #   | Item                                            | State   |
+| --- | ----------------------------------------------- | ------- |
+| A   | CI: fuzz soak, differential gate, version check | pending |
+| B   | Bound policy instance, plus a compressor cap    | pending |
+| C   | Resumable decode (prototype only)               | pending |
+| D   | Huffman decode LUT                              | dropped |
+
+## A. CI: fuzz soak, differential gate, version check
+
+One pull request. These are workflow-only changes and are batched
+deliberately, not filed one at a time.
+
+`tests/FuzzTest.lua` already supports everything below through
+`LIBDEFLATEGUARD_FUZZ_SEED`, `LIBDEFLATEGUARD_FUZZ_ITERATIONS`, and
+`LIBDEFLATEGUARD_FUZZ_REFERENCE`. CI currently runs only the default
+single-iteration pass, so the capability exists and is unused.
+
+1. **Nightly soak.** A scheduled workflow running `FuzzTest` with a raised
+   iteration count and a rotating seed. The seed must be printed on both
+   success and failure, because a soak that cannot be replayed is not a
+   regression test. Seeds must be whole numbers below 2147483647; the suite
+   rejects anything else rather than running a workload nobody can reproduce.
+
+2. **Differential gate on decode-path pull requests.** Check the latest
+   release tag out into a worktree, point `LIBDEFLATEGUARD_FUZZ_REFERENCE` at
+   its `LibDeflateGuard.lua`, and run the suite. Every public decode entry
+   point must return identical tuples.
+
+   This needs a deliberate answer for intentional divergences before it can
+   block a merge. v1.1.2 is itself an example: the codec encoder arity change
+   surfaces as `custom codec encode: got (<string len=8>, nil), reference (<string len=8>, 0)`, which is correct and expected. Options are to run it
+   advisory-only, or to require an explicit acknowledgement in the pull
+   request. Decide this before wiring it as a required check.
+
+3. **Version consistency check.** A release carries four version sites that
+   are currently hand-edited:
+
+   - `LibDeflateGuard.lua` line 2, the header banner
+   - `LibDeflateGuard.lua` `_VERSION`
+   - `LibDeflateGuard.lua` `_COPYRIGHT`
+   - `rockspecs/libdeflateguard-<version>-1.rockspec`, both `version` and
+     `tag`
+
+   Assert they all agree with each other, and on a tag push that they agree
+   with the tag. v1.1.1 was a release whose only source change was those
+   strings, which is the failure mode this prevents.
+
+**Do this before item C.** Not because it would have caught the v1.1.2
+regressions — it would not, see "What the differential harness does not
+cover" below — but because C is the first change since the fork began that
+materially restructures the decode path, and it should land on top of a
+working soak and a working differential gate.
+
+## B. Bound policy instance, plus a compressor cap
+
+One pull request covering two related API changes.
+
+### Bound policy instance
+
+```lua
+local guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+guard:DecompressDeflate(msg)
+guard:DecodeForPrint(pasted)
+```
+
+Today a caller passes a policy to every decompress call and a separate cap to
+every codec decode, and the README has to tell them to keep the two in step:
+"A caller that raises `max_input_bytes` must raise these to match." A bound
+instance derives the codec caps from `max_input_bytes` using the ratio the
+module already applies at load time — 4/3 for the print codec, 1:1 for the
+channel codecs — and removes the manual coupling.
+
+It also retires the variadic trailing cap as the recommended call shape. That
+parameter is what made the v1.1.2 nesting bug possible: adding an optional
+last argument to a function whose natural argument is the output of a
+multi-value encoder. The v1.1.2 fix removed the trigger by making the
+encoders single-valued. It did not remove the shape. Keep the existing
+positional parameter for compatibility.
+
+### Compressor input cap
+
+Decode is bounded carefully; compression is not. Measured on this hardware,
+`luajit -joff` as a proxy for the World of Warcraft interpreter, level 6
+compression runs at roughly 1.9 MB/s, so a one-megabyte user-pasted string is
+a multi-second freeze on the frame thread. "Compression is a trusted,
+programmer-facing API" is defensible for the wire format but not for the
+stall: an addon compressing a user's chat message or export blob is the
+normal case, not an edge case.
+
+Add an optional input cap to the compress entry points. Note that compression
+currently raises on bad arguments rather than returning an error code, and
+that is deliberate and should stay; the cap needs to fit that contract rather
+than fight it.
+
+## C. Resumable decode (prototype only)
+
+The `addon` preset exists because "a decode runs on the frame thread and a
+rejected message must not be felt". That bounds the damage but also bounds the
+feature: a WeakAuras-sized import cannot be decoded at all under the default
+policy. Making the decode yieldable is the structural answer.
+
+Sketch, to be validated rather than trusted:
+
+- Run `Inflate` inside a coroutine.
+- `DecodeUntilEndOfBlock` already compares against a single local
+  `max_work_units` in its hot loop. Replace it with
+  `work_deadline = min(slice_end, max_work_units)`. When the deadline trips,
+  yield and refresh it if the total budget survives; fail exactly as today if
+  it does not. The hot loop keeps one comparison, so the one-shot path pays
+  nothing.
+- Coroutine locals persist across a yield, so the existing
+  write-back-on-success logic in that function does not change.
+- **Containment must use `coroutine.resume`, not `pcall`.** Lua 5.1, which is
+  what World of Warcraft runs, cannot yield across a `pcall` boundary.
+  `coroutine.resume` already returns `false, err` on a raise, which gives the
+  same `internal_error` contract the module promises today.
+
+Ship it as a prototype behind the differential harness, not as a planned
+feature. Gates before it becomes real:
+
+- `GuardTest` and `FuzzTest` green, and the differential harness clean for
+  the one-shot path.
+- A benchmark showing no measurable regression on one-shot decoding.
+- The existing adversarial vectors in `GuardTest` still charge exactly. They
+  assert precise budget boundaries specifically so that an optimisation which
+  stops charging for a step fails deterministically.
+
+Kill criterion: if this starts pulling the module away from "LibDeflate plus
+budgets", stop. The value of this fork is a small, auditable delta from
+upstream, and that is worth more than any single feature.
+
+## D. Huffman decode LUT — dropped
+
+Replacing the bit-by-bit canonical decode in `CreateReader`'s `Decode` with a
+9-bit lookup table, the way zlib does, was considered and rejected for now.
+
+Measured worst cases at the default policy, `luajit -joff`:
+
+| Shape                            | Result                 |
+| -------------------------------- | ---------------------- |
+| Match bomb, hits the output cap  | 7.85 ms                |
+| Header flood, hits the block cap | 7.10 ms                |
+| Largest well-formed member       | about 10 ms            |
+| Peak heap during decode          | 3.05x the decoded size |
+
+The budgets calibrate cleanly across adversarial shapes, because the
+bit-walk cost is bounded by input bits and the input cap binds first. A LUT
+would trade that clean story for a 512-entry allocation per dynamic block
+which would itself need work-unit charging, and at `max_blocks = 256` that is
+131072 entries. The win is smallest for the short messages that dominate the
+World of Warcraft use case. Revisit only if someone reports a real stall.
+
+## What the differential harness does not cover
+
+Worth recording, because it was assumed otherwise during the v1.1.2 work.
+
+The differential mode would not have caught either v1.1.2 regression. Every
+decode call site in `tests/FuzzTest.lua` — lines 620, 675, 691, 703 and 718 —
+passes either a truncated local or `encoded[1]`. The nested
+`Decode(Encode(x))` form appears nowhere in the suite, in `GuardTest`, or in
+`examples/example.lua`. The encoder arity did not change when the input cap
+was added either, so there was no divergence for the harness to find; the
+fault was a latent interaction between two individually consistent sides.
+
+The lesson is to assert the call shape a user writes, not the shape the
+harness finds convenient. Storing a result in a local truncates multiple
+returns and hides exactly this class of fault.
+
+## Repository traps
+
+Collected because each one has cost time at least once.
+
+- **Formatting is a required check.** `check_format` runs LuaFormatter over
+  `*.lua` and prettier over `*.md` and `*.yml`, each followed by
+  `git diff --exit-code`. Run `tools/format_lua.sh` and `tools/format_doc.sh`
+  before pushing.
+- **Prettier rewrites line endings on Windows.** A run touches every Markdown
+  and YAML file in the tree while changing the content of almost none. Check
+  `git diff --stat`, which normalises, rather than `git status`, and stage the
+  intended files explicitly instead of `git add -A`.
+- **`tests/Test.lua` needs luaunit and the reference binaries.** See
+  `dev_docs/toolchain.md`. Without freshly built `puff` and `zdeflate` the
+  suite reports a large number of failures that have nothing to do with the
+  change under test. Compare the failure set against a baseline worktree
+  before believing any of them; CI builds those binaries and is the real gate.
+- **The command-line tests shell out to `lua`.** A machine with only
+  `luajit` on PATH needs `lua_program` in `tests/Test.lua` overridden for a
+  local run.
