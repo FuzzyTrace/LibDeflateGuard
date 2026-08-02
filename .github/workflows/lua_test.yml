@@ -122,7 +122,21 @@ jobs:
           sudo env "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}" bash -c '
             set -euxo pipefail
             source .github/workflows/script/setenv_lua.sh
-            luarocks install --deps-mode none luaunit 3.4-1
+            # luarocks fetches the rockspec from luarocks.org itself and does
+            # not retry. A transient failure there does not surface as a clean
+            # network error either: LuaRocks 3.13.0 crashes in its own error
+            # path with "attempt to concatenate local (a nil value)", which
+            # has flaked the macOS runners. Every other download in CI already
+            # passes --retry to curl; this was the one that did not.
+            for attempt in 1 2 3 4 5; do
+              if luarocks install --deps-mode none luaunit 3.4-1; then
+                exit 0
+              fi
+              echo "luarocks install failed on attempt ${attempt}"
+              sleep $((attempt * 10))
+            done
+            echo "luarocks install luaunit failed after 5 attempts" >&2
+            exit 1
           '
 
       - name: Run tests
