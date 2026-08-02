@@ -178,6 +178,10 @@ LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
 
 -- localize Lua api for faster access.
 local assert = assert
+local coroutine_create = coroutine.create
+local coroutine_resume = coroutine.resume
+local coroutine_status = coroutine.status
+local coroutine_yield = coroutine.yield
 local error = error
 local math_floor = math.floor
 local math_huge = math.huge
@@ -2431,9 +2435,20 @@ end
 -- @param dictionary The preset dictionary. nil if not provided.
 --		This dictionary should be produced by LibDeflateGuard:CreateDictionary(str)
 -- @return The decomrpess state.
-local function CreateDecompressState(str, dictionary, limits)
+local function CreateDecompressState(str, dictionary, limits, work_slice)
   local ReadBits, ReadBytes, Decode, ReaderBitlenLeft, SkipToByteBoundary =
     CreateReader(str)
+  local max_work_units = limits.max_work_units
+  -- PROTOTYPE, resumable decode. Every work charge compares against
+  -- "work_deadline" and nothing else. The invariant
+  -- "work_deadline <= max_work_units" holds at every assignment to it, so a
+  -- deadline can only ever make a charge trip earlier than the total budget
+  -- would, never later: no charge can be skipped by getting a deadline wrong.
+  -- A one-shot decode passes no slice, the deadline is pinned to
+  -- max_work_units for the whole decode, and every trip is terminal exactly as
+  -- it is without this change.
+  local work_deadline = max_work_units
+  if work_slice and work_slice < max_work_units then work_deadline = work_slice end
   local state = {
     ReadBits = ReadBits,
     ReadBytes = ReadBytes,
@@ -2448,16 +2463,42 @@ local function CreateDecompressState(str, dictionary, limits)
     output_size = 0,
     block_count = 0,
     symbol_count = 0,
-    work_units = 0
+    work_units = 0,
+    work_slice = work_slice,
+    work_deadline = work_deadline
   }
   return state
+end
+
+-- PROTOTYPE, resumable decode. Reached only when a charge site has already
+-- tripped its deadline, so a decode that is inside its budget never calls
+-- this at all and the charge sites keep exactly one comparison each.
+-- @return the next deadline, or nil when the charge must fail with
+-- _STATUS_WORK_LIMIT exactly as it does today.
+local function RefreshWorkDeadline(state, work_units)
+  local max_work_units = state.limits.max_work_units
+  -- The total budget is tested first and unconditionally. Refreshing a slice
+  -- can never carry a decode past max_work_units.
+  if work_units > max_work_units then return nil end
+  local work_slice = state.work_slice
+  -- One-shot: the deadline is already max_work_units, so arriving here means
+  -- the total budget is gone. Unreachable in practice, and terminal anyway.
+  if not work_slice then return nil end
+  coroutine_yield()
+  local slice_end = work_units + work_slice
+  if slice_end > max_work_units then return max_work_units end
+  return slice_end
 end
 
 local function ConsumeSymbols(state, count)
   local symbol_count = state.symbol_count + count
   if symbol_count > state.limits.max_symbols then return _STATUS_SYMBOL_LIMIT end
   local work_units = state.work_units + count
-  if work_units > state.limits.max_work_units then return _STATUS_WORK_LIMIT end
+  if work_units > state.work_deadline then
+    local work_deadline = RefreshWorkDeadline(state, work_units)
+    if not work_deadline then return _STATUS_WORK_LIMIT end
+    state.work_deadline = work_deadline
+  end
   state.symbol_count = symbol_count
   state.work_units = work_units
   return 0
@@ -2469,7 +2510,11 @@ local function ConsumeOutput(state, count)
     return _STATUS_OUTPUT_LIMIT
   end
   local work_units = state.work_units + count
-  if work_units > state.limits.max_work_units then return _STATUS_WORK_LIMIT end
+  if work_units > state.work_deadline then
+    local work_deadline = RefreshWorkDeadline(state, work_units)
+    if not work_deadline then return _STATUS_WORK_LIMIT end
+    state.work_deadline = work_deadline
+  end
   state.output_size = output_size
   state.work_units = work_units
   return 0
@@ -2477,7 +2522,11 @@ end
 
 local function ConsumeWork(state, count)
   local work_units = state.work_units + count
-  if work_units > state.limits.max_work_units then return _STATUS_WORK_LIMIT end
+  if work_units > state.work_deadline then
+    local work_deadline = RefreshWorkDeadline(state, work_units)
+    if not work_deadline then return _STATUS_WORK_LIMIT end
+    state.work_deadline = work_deadline
+  end
   state.work_units = work_units
   return 0
 end
@@ -2560,10 +2609,13 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
   local limits = state.limits
   local max_symbols = limits.max_symbols
   local max_output_bytes = limits.max_output_bytes
-  local max_work_units = limits.max_work_units
   local symbol_count = state.symbol_count
   local output_size = state.output_size
   local work_units = state.work_units
+  -- PROTOTYPE, resumable decode. This replaces the hoisted max_work_units:
+  -- one local, one comparison per charge, same as before. It equals
+  -- max_work_units for a one-shot decode, so that path is unchanged.
+  local work_deadline = state.work_deadline
 
   local buffer_end = 1
   if dictionary and not buffer[0] then
@@ -2582,7 +2634,10 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
     symbol_count = symbol_count + 1
     work_units = work_units + 1
     if symbol_count > max_symbols then return _STATUS_SYMBOL_LIMIT end
-    if work_units > max_work_units then return _STATUS_WORK_LIMIT end
+    if work_units > work_deadline then
+      work_deadline = RefreshWorkDeadline(state, work_units)
+      if not work_deadline then return _STATUS_WORK_LIMIT end
+    end
     local symbol = Decode(lcodes_huffman_bitlens, lcodes_huffman_symbols,
                           lcodes_huffman_min_bitlen)
     if symbol < 0 or symbol > 285 then
@@ -2592,7 +2647,10 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
       output_size = output_size + 1
       work_units = work_units + 1
       if output_size > max_output_bytes then return _STATUS_OUTPUT_LIMIT end
-      if work_units > max_work_units then return _STATUS_WORK_LIMIT end
+      if work_units > work_deadline then
+        work_deadline = RefreshWorkDeadline(state, work_units)
+        if not work_deadline then return _STATUS_WORK_LIMIT end
+      end
       buffer_size = buffer_size + 1
       buffer[buffer_size] = _byte_to_char[symbol]
     elseif symbol > 256 then -- Length code
@@ -2605,7 +2663,10 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
       symbol_count = symbol_count + 1
       work_units = work_units + 1
       if symbol_count > max_symbols then return _STATUS_SYMBOL_LIMIT end
-      if work_units > max_work_units then return _STATUS_WORK_LIMIT end
+      if work_units > work_deadline then
+        work_deadline = RefreshWorkDeadline(state, work_units)
+        if not work_deadline then return _STATUS_WORK_LIMIT end
+      end
       symbol = Decode(dcodes_huffman_bitlens, dcodes_huffman_symbols,
                       dcodes_huffman_min_bitlen)
       if symbol < 0 or symbol > 29 then
@@ -2625,7 +2686,10 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
       output_size = output_size + bitlen
       work_units = work_units + bitlen
       if output_size > max_output_bytes then return _STATUS_OUTPUT_LIMIT end
-      if work_units > max_work_units then return _STATUS_WORK_LIMIT end
+      if work_units > work_deadline then
+        work_deadline = RefreshWorkDeadline(state, work_units)
+        if not work_deadline then return _STATUS_WORK_LIMIT end
+      end
       if char_buffer_index >= -257 then
         for _ = 1, bitlen do
           buffer_size = buffer_size + 1
@@ -2661,6 +2725,7 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens,
   state.symbol_count = symbol_count
   state.output_size = output_size
   state.work_units = work_units
+  state.work_deadline = work_deadline
 
   return 0
 end
@@ -2880,8 +2945,8 @@ end
 
 -- @see LibDeflateGuard:DecompressDeflate(str)
 -- @see LibDeflateGuard:DecompressDeflateWithDict(str, dictionary)
-local function DecompressDeflateInternal(str, dictionary, limits)
-  local state = CreateDecompressState(str, dictionary, limits)
+local function DecompressDeflateInternal(str, dictionary, limits, work_slice)
+  local state = CreateDecompressState(str, dictionary, limits, work_slice)
   local result, status = Inflate(state)
   if not result then return nil, status end
 
@@ -2892,8 +2957,8 @@ end
 
 -- @see LibDeflateGuard:DecompressZlib(str)
 -- @see LibDeflateGuard:DecompressZlibWithDict(str)
-local function DecompressZlibInternal(str, dictionary, limits)
-  local state = CreateDecompressState(str, dictionary, limits)
+local function DecompressZlibInternal(str, dictionary, limits, work_slice)
+  local state = CreateDecompressState(str, dictionary, limits, work_slice)
   local ReadBits = state.ReadBits
 
   local CMF = ReadBits(8)
@@ -2987,7 +3052,7 @@ local function MapDecompressStatus(status)
 end
 
 local function DecompressGuarded(internal, str, dictionary, limits,
-                                 check_dictionary)
+                                 check_dictionary, work_slice)
   if type(str) ~= "string" then return nil, _ERRORS.INVALID_ARGUMENT end
 
   local resolved_limits = ResolveDecompressLimits(limits)
@@ -3001,7 +3066,8 @@ local function DecompressGuarded(internal, str, dictionary, limits,
     if not dictionary_valid then return nil, _ERRORS.INVALID_ARGUMENT end
   end
 
-  local output, internal_status = internal(str, dictionary, resolved_limits)
+  local output, internal_status = internal(str, dictionary, resolved_limits,
+                                           work_slice)
   if not output then return nil, MapDecompressStatus(internal_status) end
   if internal_status ~= 0 then return nil, _ERRORS.TRAILING_DATA end
   return output, 0
@@ -3010,7 +3076,10 @@ end
 local function DecompressSafely(internal, str, dictionary, limits,
                                 check_dictionary)
   -- Arguments are forwarded through pcall rather than captured by a closure,
-  -- so a guarded decode allocates no closure per call.
+  -- so a guarded decode allocates no closure per call. A one-shot decode
+  -- passes no work slice, so it can never reach a yield and pcall stays the
+  -- right containment for it. The resumable prototype cannot use pcall,
+  -- because Lua 5.1 cannot yield across it; see CreateResumableDecompress.
   local ok, result, status = pcall(DecompressGuarded, internal, str, dictionary,
                                    limits, check_dictionary)
 
@@ -3079,6 +3148,64 @@ end
 -- @see LibDeflateGuard:CompressZlibWithDict
 function LibDeflateGuard:DecompressZlibWithDict(str, dictionary, limits)
   return DecompressSafely(DecompressZlibInternal, str, dictionary, limits, true)
+end
+
+-- PROTOTYPE, resumable decode. Not supported API. See dev_docs/roadmap.md
+-- item C.
+--
+-- Containment here is coroutine.resume rather than pcall, because Lua 5.1 --
+-- which is what World of Warcraft runs -- cannot yield across a pcall
+-- boundary. coroutine.resume returns false plus the raised value on a raise,
+-- which is the same containment the one-shot path gets from pcall, so the
+-- internal_error contract is unchanged. Nothing between coroutine.create and
+-- RefreshWorkDeadline's coroutine.yield is a pcall or a C call.
+local function CreateResumableDecompress(internal, str, dictionary, limits,
+                                         check_dictionary, work_slice)
+  if type(work_slice) ~= "number" or work_slice ~= work_slice or work_slice < 1 or
+    work_slice == math_huge or work_slice ~= math_floor(work_slice) then
+    return nil, _ERRORS.INVALID_ARGUMENT
+  end
+  local co = coroutine_create(DecompressGuarded)
+  local started = false
+  return function()
+    if coroutine_status(co) ~= "suspended" then
+      return true, nil, _ERRORS.INTERNAL_ERROR
+    end
+    local ok, result, status
+    if started then
+      ok, result, status = coroutine_resume(co)
+    else
+      started = true
+      ok, result, status = coroutine_resume(co, internal, str, dictionary,
+                                            limits, check_dictionary, work_slice)
+    end
+    if not ok then return true, nil, _ERRORS.INTERNAL_ERROR end
+    if coroutine_status(co) == "suspended" then return false end
+    return true, result, status
+  end
+end
+
+--- PROTOTYPE. Decompress raw deflate a slice at a time. NOT SUPPORTED API:
+-- the name, the shape and the existence of this function may all change or be
+-- withdrawn. See dev_docs/roadmap.md item C.
+-- @param str [string] The data to be decompressed.
+-- @param limits [table/nil] A decode policy, as LibDeflateGuard:DecompressDeflate
+-- takes. The total budget is enforced exactly as it is for a one-shot decode.
+-- @param work_slice [integer] Work units to spend before suspending. Must be a
+-- positive whole number.
+-- @return [function/nil] A step function, or nil if work_slice is invalid.
+-- @return [string/nil] A symbolic error from LibDeflateGuard.ERRORS if the
+-- step function could not be created.
+-- @usage
+-- local step = LibDeflateGuard:EXPERIMENTAL_ResumableDecompressDeflate(
+--   data, nil, 20000)
+-- local done, result, status
+-- repeat done, result, status = step() until done
+-- -- "result" and "status" are the tuple DecompressDeflate would have returned.
+function LibDeflateGuard:EXPERIMENTAL_ResumableDecompressDeflate(str, limits,
+                                                                 work_slice)
+  return CreateResumableDecompress(DecompressDeflateInternal, str, nil, limits,
+                                   false, work_slice)
 end
 
 -- Calculate the huffman code of fixed block

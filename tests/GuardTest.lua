@@ -922,6 +922,132 @@ Test("dynamic header flood is charged exactly and refused by default",
               "exactly max_blocks must decode")
 end)
 
+-- Drive a step function to completion and report how many times it suspended.
+local function RunToCompletion(step)
+  local suspends = 0
+  local done, result, status
+  repeat
+    done, result, status = step()
+    if not done then suspends = suspends + 1 end
+  until done
+  return suspends, result, status
+end
+
+-- PROTOTYPE, resumable decode. See dev_docs/roadmap.md item C.
+--
+-- The property under test is that suspending a decode changes nothing except
+-- when it runs: the same tuple comes back, and the total work budget is still
+-- charged to the unit across every yield. A slice refresh that forgot to test
+-- the total budget first would let a sliced decode outrun a budget that a
+-- one-shot decode refuses, which is the failure this pins down.
+Test("PROTOTYPE resumable decode suspends without changing the answer",
+     function()
+  local payload = string.rep("resumable round trip ", 400)
+
+  -- The shape a caller types. CompressDeflate returns two values and "str" is
+  -- not the last parameter, so the padding_bitlen is truncated here rather
+  -- than landing in the policy slot the way it does for DecompressDeflate.
+  local step = Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                 Guard:CompressDeflate(payload), Guard.LIMIT_PRESETS.generous,
+                 500)
+  assert(type(step) == "function", "a valid slice must produce a step function")
+  local suspends, result, status = RunToCompletion(step)
+  assert(suspends > 1,
+         "a sliced decode must actually suspend, got " .. tostring(suspends))
+  AssertEqual(result, payload, "resumed decode result")
+  AssertEqual(status, 0, "resumed decode status")
+
+  -- Identical tuple to the one-shot path over the same input and policy.
+  local compressed = Guard:CompressDeflate(payload)
+  local one_shot, one_shot_status = Guard:DecompressDeflate(compressed,
+                                                            Guard.LIMIT_PRESETS
+                                                              .generous)
+  AssertEqual(result, one_shot, "resumed result matches one-shot")
+  AssertEqual(status, one_shot_status, "resumed status matches one-shot")
+
+  -- Charged exactly, across yields. The budget arithmetic is the amplification
+  -- bomb's, so this asserts against the same charging model that test pins.
+  local pairs_count = 64
+  local member = MatchBomb(pairs_count)
+  local expected_output = 1 + 258 * pairs_count
+  local expected_symbols = 2 * pairs_count + 2
+  local expected_work = 1 + expected_symbols + expected_output
+  local exact = {
+    max_input_bytes = #member,
+    max_output_bytes = expected_output,
+    max_blocks = 1,
+    max_symbols = expected_symbols,
+    max_work_units = expected_work
+  }
+  suspends, result, status = RunToCompletion(
+                               Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                                 member, exact, 10))
+  assert(suspends > 1, "the exact budget must still be sliced")
+  AssertEqual(#result, expected_output, "sliced bomb output length")
+  AssertEqual(status, 0, "sliced bomb status")
+
+  exact.max_work_units = expected_work - 1
+  result, status = select(2, RunToCompletion(
+                            Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                              member, exact, 10)))
+  AssertEqual(result, nil, "one work unit short, sliced, output")
+  AssertEqual(status, Guard.ERRORS.WORK_LIMIT_EXCEEDED,
+              "slicing must not extend the total work budget")
+
+  -- A slice larger than the whole decode never suspends and must still answer.
+  suspends, result, status = RunToCompletion(
+                               Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                                 compressed, Guard.LIMIT_PRESETS.generous,
+                                 1000000))
+  AssertEqual(suspends, 0, "an oversized slice must not suspend")
+  AssertEqual(result, payload, "unsliced resumable result")
+  AssertEqual(status, 0, "unsliced resumable status")
+
+  local invalid, invalid_error = Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                                   compressed, nil, 0)
+  AssertEqual(invalid, nil, "zero slice step function")
+  AssertEqual(invalid_error, Guard.ERRORS.INVALID_ARGUMENT, "zero slice error")
+  AssertEqual(select(2, Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                       compressed, nil, 1.5)), Guard.ERRORS.INVALID_ARGUMENT,
+              "fractional slice error")
+end)
+
+-- PROTOTYPE, resumable decode. Containment on this path is coroutine.resume,
+-- not pcall, because Lua 5.1 cannot yield across pcall. That substitution must
+-- not weaken the promise the module makes today: a raise inside the decode is
+-- an internal_error return, never a throw at the caller.
+Test("PROTOTYPE a raise inside the resumable coroutine is internal_error",
+     function()
+  -- Reading the policy is the first thing the decode does, and it happens
+  -- inside the coroutine. A policy that raises on read therefore raises where
+  -- only coroutine.resume can catch it.
+  local hostile_policy = setmetatable({}, {
+    __index = function() error("hostile policy") end
+  })
+  local step = Guard:EXPERIMENTAL_ResumableDecompressDeflate(
+                 Guard:CompressDeflate("contained"), hostile_policy, 16)
+  assert(type(step) == "function", "hostile policy must not fail construction")
+  local done, result, status = step()
+  AssertEqual(done, true, "hostile policy terminates the decode")
+  AssertEqual(result, nil, "hostile policy output")
+  AssertEqual(status, Guard.ERRORS.INTERNAL_ERROR, "hostile policy error")
+
+  -- Stepping a finished decode is a caller error, and must also be answered
+  -- rather than thrown.
+  done, result, status = step()
+  AssertEqual(done, true, "stepping a dead decode terminates")
+  AssertEqual(result, nil, "stepping a dead decode output")
+  AssertEqual(status, Guard.ERRORS.INTERNAL_ERROR, "stepping a dead decode")
+
+  -- The one-shot contract is unchanged by the same substitution.
+  local hostile_dictionary = setmetatable({}, {
+    __index = function() error("hostile dictionary") end
+  })
+  AssertEqual(select(2, Guard:DecompressDeflateWithDict(FromHex("0300"),
+                                                        hostile_dictionary)),
+              Guard.ERRORS.INTERNAL_ERROR, "one-shot containment unchanged")
+end)
+
 _G.LibStub = original_libstub
 _G.LibDeflate = original_libdeflate
 _G.LibDeflateGuard = original_libdeflateguard
