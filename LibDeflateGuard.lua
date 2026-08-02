@@ -732,6 +732,10 @@ local _compression_level_configs = {
 -- @param configs The compression configuration table
 -- @return true if valid, false if not valid.
 -- @return if not valid, the error message.
+-- @return the value of configs.max_input_bytes, or nil if it was not given.
+-- It is read here, from the same pairs() walk that validates the table, so
+-- that a hostile __index on a configs table cannot make the entry point see a
+-- different cap from the one it validated.
 local function IsValidArguments(str, check_dictionary, dictionary,
                                 check_configs, configs)
 
@@ -742,6 +746,7 @@ local function IsValidArguments(str, check_dictionary, dictionary,
     local dict_valid, dict_err = IsValidDictionary(dictionary)
     if not dict_valid then return false, dict_err end
   end
+  local max_input_bytes
   if check_configs then
     local type_configs = type(configs)
     if type_configs ~= "nil" and type_configs ~= "table" then
@@ -750,7 +755,7 @@ local function IsValidArguments(str, check_dictionary, dictionary,
     end
     if type_configs == "table" then
       for k, v in pairs(configs) do
-        if k ~= "level" and k ~= "strategy" then
+        if k ~= "level" and k ~= "strategy" and k ~= "max_input_bytes" then
           return false,
                  ("'configs' - unsupported table key in the configs: '%s'."):format(
                    k)
@@ -762,11 +767,23 @@ local function IsValidArguments(str, check_dictionary, dictionary,
           -- random_block_type is for testing purpose
           return false, ("'configs' - unsupported 'strategy': '%s'."):format(
                    tostring(v))
+        elseif k == "max_input_bytes" then
+          -- A malformed cap is a programmer error and raises, like every
+          -- other malformed compression argument. An input that is merely
+          -- larger than a well-formed cap is a runtime outcome and is
+          -- reported by the entry point instead.
+          if type(v) ~= "number" or v ~= v or v < 1 or v == math_huge or v ~=
+            math_floor(v) then
+            return false,
+                   ("'configs' - unsupported 'max_input_bytes': %s."):format(
+                     tostring(v))
+          end
+          max_input_bytes = v
         end
       end
     end
   end
-  return true, ""
+  return true, "", max_input_bytes
 end
 
 --[[ --------------------------------------------------------------------------
@@ -2010,6 +2027,15 @@ end
 -- @field strategy The compression strategy. "fixed" to only use fixed deflate
 -- compression block. "dynamic" to only use dynamic block. "huffman_only" to
 -- do no LZ77 compression. Only do huffman compression.
+-- @field max_input_bytes A positive whole number of bytes. If given, an input
+-- longer than this is refused with nil plus
+-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED instead of being compressed.
+-- Omit it for no cap, which is the pre-1.2 behaviour. Compression is roughly
+-- linear in the length of its input and is slow in pure Lua, so an addon
+-- compressing a user-pasted string on the frame thread wants a cap even
+-- though the bytes are its own. A malformed cap raises, like every other
+-- malformed compression argument; a well-formed cap that the input exceeds is
+-- a runtime answer, not a programmer error.
 
 -- @see LibDeflateGuard:CompressDeflate(str, configs)
 -- @see LibDeflateGuard:CompressDeflateWithDict(str, dictionary, configs)
@@ -2083,20 +2109,27 @@ end
 -- @param str [string] The data to be compressed.
 -- @param configs [table/nil] The configuration table to control the compression
 -- . If nil, use the default configuration.
--- @return [string] The compressed data.
--- @return [integer] The number of bits padded at the end of output.
+-- @return [string/nil] The compressed data, or nil if the input is longer
+-- than configs.max_input_bytes.
+-- @return [integer/string] The number of bits padded at the end of output.
 -- 0 <= bits < 8  <br>
 -- This means the most significant "bits" of the last byte of the returned
 -- compressed data are padding bits and they don't affect decompression.
 -- You don't need to use this value unless you want to do some postprocessing
 -- to the compressed data.
+-- If the first return value is nil, this is
+-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED instead.
 -- @see compression_configs
 -- @see LibDeflateGuard:DecompressDeflate
 function LibDeflateGuard:CompressDeflate(str, configs)
-  local arg_valid, arg_err = IsValidArguments(str, false, nil, true, configs)
+  local arg_valid, arg_err, max_input_bytes =
+    IsValidArguments(str, false, nil, true, configs)
   if not arg_valid then
     error(("Usage: LibDeflateGuard:CompressDeflate(str, configs): " .. arg_err),
           2)
+  end
+  if max_input_bytes and #str > max_input_bytes then
+    return nil, _ERRORS.INPUT_LIMIT_EXCEEDED
   end
   return CompressDeflateInternal(str, nil, configs)
 end
@@ -2107,22 +2140,28 @@ end
 -- LibDeflateGuard:CreateDictionary
 -- @param configs [table/nil] The configuration table to control the compression
 -- . If nil, use the default configuration.
--- @return [string] The compressed data.
--- @return [integer] The number of bits padded at the end of output.
+-- @return [string/nil] The compressed data, or nil if the input is longer
+-- than configs.max_input_bytes.
+-- @return [integer/string] The number of bits padded at the end of output.
 -- 0 <= bits < 8  <br>
 -- This means the most significant "bits" of the last byte of the returned
 -- compressed data are padding bits and they don't affect decompression.
 -- You don't need to use this value unless you want to do some postprocessing
 -- to the compressed data.
+-- If the first return value is nil, this is
+-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED instead.
 -- @see compression_configs
 -- @see LibDeflateGuard:CreateDictionary
 -- @see LibDeflateGuard:DecompressDeflateWithDict
 function LibDeflateGuard:CompressDeflateWithDict(str, dictionary, configs)
-  local arg_valid, arg_err = IsValidArguments(str, true, dictionary, true,
-                                              configs)
+  local arg_valid, arg_err, max_input_bytes =
+    IsValidArguments(str, true, dictionary, true, configs)
   if not arg_valid then
     error(("Usage: LibDeflateGuard:CompressDeflateWithDict" ..
             "(str, dictionary, configs): " .. arg_err), 2)
+  end
+  if max_input_bytes and #str > max_input_bytes then
+    return nil, _ERRORS.INPUT_LIMIT_EXCEEDED
   end
   return CompressDeflateInternal(str, dictionary, configs)
 end
@@ -2131,16 +2170,23 @@ end
 -- @param str [string] the data to be compressed.
 -- @param configs [table/nil] The configuration table to control the compression
 -- . If nil, use the default configuration.
--- @return [string] The compressed data.
--- @return [integer] The number of bits padded at the end of output.
+-- @return [string/nil] The compressed data, or nil if the input is longer
+-- than configs.max_input_bytes.
+-- @return [integer/string] The number of bits padded at the end of output.
 -- Should always be 0.
 -- Zlib formatted compressed data never has padding bits at the end.
+-- If the first return value is nil, this is
+-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED instead.
 -- @see compression_configs
 -- @see LibDeflateGuard:DecompressZlib
 function LibDeflateGuard:CompressZlib(str, configs)
-  local arg_valid, arg_err = IsValidArguments(str, false, nil, true, configs)
+  local arg_valid, arg_err, max_input_bytes =
+    IsValidArguments(str, false, nil, true, configs)
   if not arg_valid then
     error(("Usage: LibDeflateGuard:CompressZlib(str, configs): " .. arg_err), 2)
+  end
+  if max_input_bytes and #str > max_input_bytes then
+    return nil, _ERRORS.INPUT_LIMIT_EXCEEDED
   end
   return CompressZlibInternal(str, nil, configs)
 end
@@ -2151,19 +2197,25 @@ end
 -- by LibDeflateGuard:CreateDictionary()
 -- @param configs [table/nil] The configuration table to control the compression
 -- . If nil, use the default configuration.
--- @return [string] The compressed data.
--- @return [integer] The number of bits padded at the end of output.
+-- @return [string/nil] The compressed data, or nil if the input is longer
+-- than configs.max_input_bytes.
+-- @return [integer/string] The number of bits padded at the end of output.
 -- Should always be 0.
 -- Zlib formatted compressed data never has padding bits at the end.
+-- If the first return value is nil, this is
+-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED instead.
 -- @see compression_configs
 -- @see LibDeflateGuard:CreateDictionary
 -- @see LibDeflateGuard:DecompressZlibWithDict
 function LibDeflateGuard:CompressZlibWithDict(str, dictionary, configs)
-  local arg_valid, arg_err = IsValidArguments(str, true, dictionary, true,
-                                              configs)
+  local arg_valid, arg_err, max_input_bytes =
+    IsValidArguments(str, true, dictionary, true, configs)
   if not arg_valid then
     error(("Usage: LibDeflateGuard:CompressZlibWithDict" ..
             "(str, dictionary, configs): " .. arg_err), 2)
+  end
+  if max_input_bytes and #str > max_input_bytes then
+    return nil, _ERRORS.INPUT_LIMIT_EXCEEDED
   end
   return CompressZlibInternal(str, dictionary, configs)
 end
@@ -3094,53 +3146,14 @@ local function ResolveCodecInputCap(cap, default_cap)
   return cap
 end
 
---- Create a custom codec with encoder and decoder. <br>
--- This codec is used to convert an input string to make it not contain
--- some specific bytes.
--- This created codec and the parameters of this function do NOT take
--- localization into account. One byte (0-255) in the string is exactly one
--- character (0-255).
--- Credits to LibCompress.
--- The code was rewritten by upstream LibDeflate author Haoqian He. <br>
--- @param reserved_chars [string] The created encoder will ensure encoded
--- data does not contain any single character in reserved_chars. This parameter
--- should be non-empty.
--- @param escape_chars [string] The escape character(s) used in the created
--- codec. The codec converts any character included in reserved\_chars /
--- escape\_chars / map\_chars to (one escape char + one character not in
--- reserved\_chars / escape\_chars / map\_chars).
--- You usually only need to provide a length-1 string for this parameter.
--- Length-2 string is only needed when
--- reserved\_chars + escape\_chars + map\_chars is longer than 127.
--- This parameter should be non-empty.
--- @param map_chars [string] The created encoder will map every
--- reserved\_chars:sub(i, i) (1 <= i <= #map\_chars) to map\_chars:sub(i, i).
--- This parameter CAN be empty string.
--- @return [table/nil] If the codec cannot be created, return nil.<br>
--- If the codec can be created according to the given
--- parameters, return the codec, which is a encode/decode table.
--- The table contains two functions: <br>
--- t:Encode(str) returns the encoded string. <br>
--- t:Decode(str) returns the decoded string if succeeds. nil if fails.
--- @return [nil/string] If the codec is successfully created, return nil.
--- If not, return a string that describes the reason why the codec cannot be
--- created.
--- @usage
--- -- Create an encoder/decoder that maps all "\000" to "\003",
--- -- and escape "\001" (and "\002" and "\003") properly
--- local codec = LibDeflateGuard:CreateCodec("\000\001", "\002", "\003")
---
--- local encoded = codec:Encode(SOME_STRING)
--- -- "encoded" does not contain "\000" or "\001"
--- local decoded = codec:Decode(encoded)
--- -- assert(decoded == SOME_STRING)
-function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
-  if type(reserved_chars) ~= "string" or type(escape_chars) ~= "string" or
-    type(map_chars) ~= "string" then
-    error("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
-            " escape_chars, map_chars):" .. " All arguments must be string.", 2)
-  end
-
+-- The body of LibDeflateGuard:CreateCodec, minus its argument type check.
+-- Split out so that a codec can be built with a decode input cap other than
+-- the load-time default: a policy instance from LibDeflateGuard.WithPolicy
+-- derives that cap from its own max_input_bytes. The cap is a parameter of
+-- construction rather than a field on the returned table, so a consumer that
+-- writes to the codec cannot widen what the codec enforces.
+local function CreateCodecInternal(reserved_chars, escape_chars, map_chars,
+                                   default_input_bytes)
   if escape_chars == "" then return nil, "No escape characters supplied." end
   if #reserved_chars < #map_chars then
     return nil, "The number of reserved characters must be" ..
@@ -3281,7 +3294,7 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
     -- an amplification. It still runs before any decompress budget applies,
     -- so it carries its own cap. Callers almost never override it, so the
     -- default path stays inline and does not pay for a call.
-    local cap = _default_codec_input_bytes
+    local cap = default_input_bytes
     if max_input_bytes ~= nil then
       cap = ResolveCodecInputCap(max_input_bytes, cap)
       if not cap then return nil, _ERRORS.INVALID_ARGUMENT end
@@ -3307,6 +3320,60 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
   end
 
   return codec
+end
+
+--- Create a custom codec with encoder and decoder. <br>
+-- This codec is used to convert an input string to make it not contain
+-- some specific bytes.
+-- This created codec and the parameters of this function do NOT take
+-- localization into account. One byte (0-255) in the string is exactly one
+-- character (0-255).
+-- Credits to LibCompress.
+-- The code was rewritten by upstream LibDeflate author Haoqian He. <br>
+-- @param reserved_chars [string] The created encoder will ensure encoded
+-- data does not contain any single character in reserved_chars. This parameter
+-- should be non-empty.
+-- @param escape_chars [string] The escape character(s) used in the created
+-- codec. The codec converts any character included in reserved\_chars /
+-- escape\_chars / map\_chars to (one escape char + one character not in
+-- reserved\_chars / escape\_chars / map\_chars).
+-- You usually only need to provide a length-1 string for this parameter.
+-- Length-2 string is only needed when
+-- reserved\_chars + escape\_chars + map\_chars is longer than 127.
+-- This parameter should be non-empty.
+-- @param map_chars [string] The created encoder will map every
+-- reserved\_chars:sub(i, i) (1 <= i <= #map\_chars) to map\_chars:sub(i, i).
+-- This parameter CAN be empty string.
+-- @return [table/nil] If the codec cannot be created, return nil.<br>
+-- If the codec can be created according to the given
+-- parameters, return the codec, which is a encode/decode table.
+-- The table contains two functions: <br>
+-- t:Encode(str) returns the encoded string. <br>
+-- t:Decode(str, max_input_bytes) returns the decoded string if succeeds,
+-- nil plus a code from LibDeflateGuard.ERRORS if it fails. Its input cap
+-- defaults to LibDeflateGuard.DEFAULT_CODEC_LIMITS.channel_max_input_bytes.
+-- Use LibDeflateGuard.WithPolicy(policy):CreateCodec(...) to get a codec
+-- whose default cap follows a policy instead.
+-- @return [nil/string] If the codec is successfully created, return nil.
+-- If not, return a string that describes the reason why the codec cannot be
+-- created.
+-- @usage
+-- -- Create an encoder/decoder that maps all "\000" to "\003",
+-- -- and escape "\001" (and "\002" and "\003") properly
+-- local codec = LibDeflateGuard:CreateCodec("\000\001", "\002", "\003")
+--
+-- local encoded = codec:Encode(SOME_STRING)
+-- -- "encoded" does not contain "\000" or "\001"
+-- local decoded = codec:Decode(encoded)
+-- -- assert(decoded == SOME_STRING)
+function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
+  if type(reserved_chars) ~= "string" or type(escape_chars) ~= "string" or
+    type(map_chars) ~= "string" then
+    error("Usage: LibDeflateGuard:CreateCodec(reserved_chars," ..
+            " escape_chars, map_chars):" .. " All arguments must be string.", 2)
+  end
+  return CreateCodecInternal(reserved_chars, escape_chars, map_chars,
+                             _default_codec_input_bytes)
 end
 
 local _addon_channel_codec
@@ -3691,6 +3758,199 @@ function LibDeflateGuard:DecodeForPrint(str, max_input_bytes)
   if not ok then return nil, _ERRORS.INTERNAL_ERROR end
   if result == nil then return nil, _ERRORS.INVALID_PRINT end
   return result
+end
+
+--[[ --------------------------------------------------------------------------
+	Bound policy instance
+--]] --------------------------------------------------------------------------
+
+-- Merge a derived compression input cap into a caller's configs table without
+-- writing to that table. An explicit configs.max_input_bytes wins: it is the
+-- more specific statement, made at the call site, and it is still validated by
+-- IsValidArguments like any other compression argument.
+local function ConfigsWithCap(configs, cap)
+  if configs == nil then return {max_input_bytes = cap} end
+  -- A non-table is not this function's problem. Hand it to the entry point,
+  -- which raises on it, rather than inventing a second error path here.
+  if type(configs) ~= "table" then return configs end
+  if configs.max_input_bytes ~= nil then return configs end
+  local merged = {}
+  for key, value in pairs(configs) do merged[key] = value end
+  merged.max_input_bytes = cap
+  return merged
+end
+
+--- Bind a decode policy to an object, so a caller states its budget once
+-- instead of on every call. <br>
+--
+-- The returned instance carries the whole budget: the decompressors take the
+-- policy, the codec decoders take an input cap derived from the policy's
+-- max_input_bytes, and the compressors take a derived input cap too. A caller
+-- therefore never mixes bound and unbound calls, and never has to keep a
+-- decompress policy and a codec cap in step by hand.
+--
+-- The derivations follow the ones this module applies to its own defaults at
+-- load time. The print codec emits 0.75 bytes per input byte, so its cap is
+-- 4/3 of max_input_bytes. The channel codecs never grow their input, so their
+-- cap is max_input_bytes itself. Compression is bounded on the bytes going in
+-- rather than the bytes coming out, because that is what the stall is
+-- proportional to and what makes the compressed result fit the same policy's
+-- decompress input cap on the way back.
+--
+-- The policy is resolved once, at construction, by the same validator the
+-- "limits" parameter uses, and the resolved numbers are held in an upvalue
+-- rather than in a field. Mutating the table passed to this function
+-- afterwards, or writing to the returned instance, cannot change what the
+-- instance enforces. That is the property LIMIT_PRESETS and DEFAULT_LIMITS
+-- already have.
+--
+-- Encoders, CreateDictionary and Adler32 are exposed on the instance
+-- unchanged. They are not budgeted: an encoder's input is the caller's own
+-- bytes and is already bounded by the compression cap in the normal
+-- compress-then-encode pipeline, and giving them a failure return would add a
+-- new error path to functions that have none. They are present so that a
+-- whole pipeline can be written against the instance.
+--
+-- @param policy [table/nil] A LIMIT_PRESETS entry, a partial table of limit
+-- keys, or nil for the defaults. Exactly what the "limits" parameter of the
+-- decompressors accepts.
+-- @return [table/nil] The policy instance, or nil if the policy is invalid.
+-- @return [nil/string] LibDeflateGuard.ERRORS.INVALID_ARGUMENT if the policy
+-- is invalid. An invalid policy is reported rather than raised, so that the
+-- same code that reads a policy out of saved variables can check it.
+-- @usage
+-- local guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS
+--                                            .generous)
+-- local payload, decode_error = guard:DecodeForPrint(pasted)
+function LibDeflateGuard.WithPolicy(policy, policy_if_called_with_a_colon)
+  -- Documented as a dot call, but the rest of this module is colon-called, so
+  -- accept LibDeflateGuard:WithPolicy(policy) too rather than resolving the
+  -- module table as a policy and rejecting it with a confusing code.
+  if policy == LibDeflateGuard then policy = policy_if_called_with_a_colon end
+
+  local resolved = ResolveDecompressLimits(policy)
+  if not resolved then return nil, _ERRORS.INVALID_ARGUMENT end
+  -- ResolveDecompressLimits hands back the shared private defaults table when
+  -- the policy is nil, and a fresh table otherwise. Copy either way, so the
+  -- instance can never alias the module defaults or the caller's table.
+  local limits = CopyLimits(resolved)
+
+  local print_cap = math_floor(limits.max_input_bytes * 4 / 3)
+  local channel_cap = limits.max_input_bytes
+  local compress_cap = limits.max_input_bytes
+  local codec_limits = {
+    print_max_input_bytes = print_cap,
+    channel_max_input_bytes = channel_cap,
+    compress_max_input_bytes = compress_cap
+  }
+
+  local instance = {}
+
+  --- The policy this instance enforces, as a fresh copy per call.
+  function instance:GetPolicy() return CopyLimits(limits) end
+
+  --- The caps derived from the policy, as a fresh copy per call.
+  function instance:GetCodecLimits()
+    return {
+      print_max_input_bytes = codec_limits.print_max_input_bytes,
+      channel_max_input_bytes = codec_limits.channel_max_input_bytes,
+      compress_max_input_bytes = codec_limits.compress_max_input_bytes
+    }
+  end
+
+  -- The bound decoders take no policy or cap argument: the instance is the
+  -- policy. Extra arguments are ignored rather than refused, so that a
+  -- compressor's second return value can be nested straight into a decoder.
+  function instance:DecompressDeflate(str)
+    return LibDeflateGuard.DecompressDeflate(LibDeflateGuard, str, limits)
+  end
+
+  function instance:DecompressDeflateWithDict(str, dictionary)
+    return LibDeflateGuard.DecompressDeflateWithDict(LibDeflateGuard, str,
+                                                     dictionary, limits)
+  end
+
+  function instance:DecompressZlib(str)
+    return LibDeflateGuard.DecompressZlib(LibDeflateGuard, str, limits)
+  end
+
+  function instance:DecompressZlibWithDict(str, dictionary)
+    return LibDeflateGuard.DecompressZlibWithDict(LibDeflateGuard, str,
+                                                  dictionary, limits)
+  end
+
+  function instance:DecodeForPrint(str)
+    return LibDeflateGuard.DecodeForPrint(LibDeflateGuard, str, print_cap)
+  end
+
+  function instance:DecodeForWoWAddonChannel(str)
+    return LibDeflateGuard.DecodeForWoWAddonChannel(LibDeflateGuard, str,
+                                                    channel_cap)
+  end
+
+  function instance:DecodeForWoWChatChannel(str)
+    return LibDeflateGuard.DecodeForWoWChatChannel(LibDeflateGuard, str,
+                                                   channel_cap)
+  end
+
+  function instance:CompressDeflate(str, configs)
+    return LibDeflateGuard.CompressDeflate(LibDeflateGuard, str, ConfigsWithCap(
+                                             configs, compress_cap))
+  end
+
+  function instance:CompressDeflateWithDict(str, dictionary, configs)
+    return LibDeflateGuard.CompressDeflateWithDict(LibDeflateGuard, str,
+                                                   dictionary, ConfigsWithCap(
+                                                     configs, compress_cap))
+  end
+
+  function instance:CompressZlib(str, configs)
+    return LibDeflateGuard.CompressZlib(LibDeflateGuard, str,
+                                        ConfigsWithCap(configs, compress_cap))
+  end
+
+  function instance:CompressZlibWithDict(str, dictionary, configs)
+    return LibDeflateGuard.CompressZlibWithDict(LibDeflateGuard, str,
+                                                dictionary, ConfigsWithCap(
+                                                  configs, compress_cap))
+  end
+
+  -- A codec built here defaults to the instance's channel cap.
+  function instance:CreateCodec(reserved_chars, escape_chars, map_chars)
+    if type(reserved_chars) ~= "string" or type(escape_chars) ~= "string" or
+      type(map_chars) ~= "string" then
+      error("Usage: guard:CreateCodec(reserved_chars," ..
+              " escape_chars, map_chars):" .. " All arguments must be string.",
+            2)
+    end
+    return CreateCodecInternal(reserved_chars, escape_chars, map_chars,
+                               channel_cap)
+  end
+
+  -- Unbudgeted pass-throughs, so a whole pipeline can be written against the
+  -- instance without reaching back to the module table.
+  function instance:EncodeForPrint(str)
+    return LibDeflateGuard.EncodeForPrint(LibDeflateGuard, str)
+  end
+
+  function instance:EncodeForWoWAddonChannel(str)
+    return LibDeflateGuard.EncodeForWoWAddonChannel(LibDeflateGuard, str)
+  end
+
+  function instance:EncodeForWoWChatChannel(str)
+    return LibDeflateGuard.EncodeForWoWChatChannel(LibDeflateGuard, str)
+  end
+
+  function instance:CreateDictionary(str, strlen, adler32)
+    return LibDeflateGuard.CreateDictionary(LibDeflateGuard, str, strlen,
+                                            adler32)
+  end
+
+  function instance:Adler32(str)
+    return LibDeflateGuard.Adler32(LibDeflateGuard, str)
+  end
+
+  return instance
 end
 
 local function InternalClearCache()

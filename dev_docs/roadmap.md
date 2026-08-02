@@ -11,7 +11,7 @@ artifact. Tick items off here as they land.
 
 | #   | Item                                            | State   |
 | --- | ----------------------------------------------- | ------- |
-| A   | CI: fuzz soak, differential gate, version check | pending |
+| A   | CI: fuzz soak, differential gate, version check | done    |
 | B   | Bound policy instance, plus a compressor cap    | pending |
 | C   | Resumable decode (prototype only)               | pending |
 | D   | Huffman decode LUT                              | dropped |

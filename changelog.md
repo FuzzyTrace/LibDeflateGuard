@@ -1,3 +1,37 @@
+### LibDeflateGuard unreleased
+
+- **Added.** `LibDeflateGuard.WithPolicy(policy)` returns an object bound to
+  one decode policy. It carries the whole budget: the decompressors take the
+  policy, the codec decoders take an input cap derived from the policy's
+  `max_input_bytes` using the ratios this module already applies to its own
+  defaults, and the compressors take a derived input cap too. This removes
+  the coupling the README used to document as "a caller that raises
+  `max_input_bytes` must raise these to match", and retires the positional
+  cap parameters as the recommended call shape. Those parameters are
+  unchanged and still work.
+
+  The resolved policy is held in an upvalue, not a field, so mutating the
+  table passed to `WithPolicy` or writing to the instance cannot change what
+  the instance enforces. That is the property `LIMIT_PRESETS` and
+  `DEFAULT_LIMITS` already have. An invalid policy is reported as
+  `nil, invalid_argument` by the same validator the `limits` parameter uses,
+  rather than raised.
+
+- **Added.** The four compress entry points accept `max_input_bytes` in their
+  existing configuration table. Omitting it means no cap, which is the
+  behaviour of every earlier release. A malformed cap raises, like every other
+  malformed compression argument; an input larger than a well-formed cap
+  returns `nil` plus `ERRORS.INPUT_LIMIT_EXCEEDED`, the shape the decode path
+  uses. Both paths return exactly two values.
+
+  Declared as a table key rather than as a trailing positional argument on
+  purpose. A trailing optional argument on a function whose natural argument
+  is the output of a multi-value function is what made the v1.1.1 nesting bug
+  possible.
+
+- **Behaviour change.** A `configs` table containing `max_input_bytes` used to
+  raise as an unsupported key. It is now accepted.
+
 ### LibDeflateGuard v1.1.2
 
 - **Fixed.** Decoding an encode result inline failed. `codec:Encode` forwarded

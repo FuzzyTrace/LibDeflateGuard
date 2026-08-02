@@ -2820,6 +2820,7 @@ function TestExported:TestExported()
     DEFAULT_LIMITS = "table",
     LIMIT_PRESETS = "table",
     DEFAULT_CODEC_LIMITS = "table",
+    WithPolicy = "function",
     Adler32 = "function",
     CreateDictionary = "function",
     CompressZlibWithDict = "function",
