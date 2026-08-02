@@ -53,6 +53,57 @@
 <div id="content">
 
 
+<h3>LibDeflateGuard v1.1.2</h3>
+
+<ul>
+    <li><strong>Fixed.</strong> Decoding an encode result inline failed. <code>codec:Encode</code> forwarded
+    <a href="https://www.lua.org/manual/5.1/manual.html#pdf-string.gsub">string.gsub</a>'s substitution count as a second return value, and v1.1.0 had
+    just given the codec decoders an optional input cap as their last argument,
+    so the count arrived as the cap:</li>
+</ul>
+
+<p>  ```lua
+  Guard:DecodeForWoWAddonChannel(Guard:EncodeForWoWAddonChannel(str))
+  ```</p>
+
+<p>  A payload with bytes to escape was refused as <code>input_limit_exceeded</code>,
+  because an encoding is always longer than its own substitution count. A
+  payload with nothing to escape was refused as <code>invalid_argument</code>, because a
+  count of zero is not a valid cap. This affected <code>DecodeForWoWAddonChannel</code>,
+  <code>DecodeForWoWChatChannel</code>, and <code>codec:Decode</code> in both v1.1.0 and v1.1.1.
+  <code>EncodeForPrint</code> never forwarded a count and was unaffected.</p>
+
+<p>  Every call in the test suites and in <code>examples/example.lua</code> stores the
+  encode result in a local first, which truncates to one value and hid the
+  fault. The regression test is written in the nested form for that reason,
+  and covers both failure modes.</p>
+
+<ul>
+    <li><p><strong>Behaviour change.</strong> <code>codec:Encode</code>, <code>EncodeForWoWAddonChannel</code>, and
+    <code>EncodeForWoWChatChannel</code> now return exactly one value. The substitution
+    count was never intended API; it was upstream <a href="https://www.lua.org/manual/5.1/manual.html#pdf-string.gsub">string.gsub</a> leaking through
+    a <code>return</code>. A caller that relied on it — <code>local s, n = Encode(x)</code> — now
+    gets <code>nil</code> for <code>n</code>. In differential fuzz against a pre-1.1.2 reference this
+    shows up as an expected arity divergence on <code>custom codec encode</code>.</p></li>
+    <li><p><strong>Fixed.</strong> The command-line tool could compress a file it could not then
+    decompress. It decoded with whatever the shipping default policy happened
+    to be, so v1.1.0's move to the addon preset capped it at 512 KiB of output.
+    The binding cap was <code>max_output_bytes</code>, not the input cap: a member well
+    inside 64 KiB still decodes past 512 KiB. A file named on the command line
+    is not the untrusted frame-thread input the budgets exist for, so the CLI
+    now decodes unbounded. <code>--limits &lt;none/addon/generous&gt;</code> opts back into a
+    preset, and a rejection now reports the reason instead of a bare
+    "Decompress fails.". The existing command-line coverage used a 738-byte
+    fixture, far below every budget, so it could not see this.</p></li>
+    <li><p>Hardened two seams that ran through the public module table. The zlib
+    decoder verified a member's Adler-32 with <code>LibDeflateGuard:Adler32</code>, a
+    writable field, so anything holding the module could have replaced the
+    checksum check. Every failure path also read <code>LibDeflateGuard.ERRORS</code> at
+    call time, so the stable error codes were not stable against mutation.
+    Both are now bound privately, and <code>LibDeflateGuard.ERRORS</code> is an inspection
+    copy like <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code>.</p></li>
+</ul>
+
 <h3>LibDeflateGuard v1.1.1</h3>
 
 <ul>

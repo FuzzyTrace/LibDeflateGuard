@@ -58,7 +58,7 @@
 <div id="content">
 
 <h1>File <code>LibDeflateGuard.lua</code></h1>
-<p>LibDeflateGuard 1.1.1 <br>
+<p>LibDeflateGuard 1.1.2 <br>
 Pure Lua compressor and decompressor with high compression ratio using
 DEFLATE/zlib format.</p>
 <p>
@@ -849,6 +849,9 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
 <span class="comment">--dict &lt;filename&gt; specify the file that contains
 </span>he entire preset dictionary.
 -h    give this help.
+<span class="comment">--limits &lt;none/addon/generous&gt; apply a decode budget. Default is none,
+</span>ecause a file named on the command line is <span class="keyword">not</span> the untrusted frame-thread
+nput the budgets exist <span class="keyword">for</span>.
 <span class="comment">--strategy &lt;fixed/huffman_only/dynamic&gt; specify a special compression strategy.
 </span>-v    <span class="global">print</span> the version <span class="keyword">and</span> copyright info.
 <span class="comment">--zlib  use zlib format instead of raw deflate.</span></pre>

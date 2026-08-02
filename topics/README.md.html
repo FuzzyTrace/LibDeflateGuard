@@ -251,6 +251,21 @@ in a final print-codec group are rejected as <code>invalid_print</code>. Decode 
 return <code>nil, error_code</code> on invalid untrusted input. Encode methods remain
 programmer-facing and retain the original argument-error behavior.</p>
 
+<p>Every encode method returns exactly one value, so an encode result can be
+passed straight to its decoder:</p>
+
+
+<pre>
+<span class="keyword">local</span> round_tripped =
+  LibDeflateGuard:DecodeForWoWAddonChannel(
+    LibDeflateGuard:EncodeForWoWAddonChannel(str))
+</pre>
+
+
+<p>Before 1.1.2, <code>codec:Encode</code> and the two channel encoders forwarded
+<a href="https://www.lua.org/manual/5.1/manual.html#pdf-string.gsub">string.gsub</a>'s substitution count as a second value, which the decoders read
+as the input cap described below. See <a href="../topics/changelog.md.html#">changelog.md</a>.</p>
+
 <p>Every decode method takes an optional input cap as its last argument:</p>
 
 
