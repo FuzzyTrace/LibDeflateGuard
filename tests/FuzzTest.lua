@@ -666,10 +666,11 @@ Test("custom codecs round trip and reject malformed input", function()
     end
     for _ = 1, Scaled(250) do
       local payload = RandomString(Random(41))
-      -- codec:Encode forwards string.gsub, so it answers with the
-      -- encoded string and a substitution count. Pack the whole tuple
-      -- rather than a truncated local, or the comparison below would
-      -- measure the harness instead of the codec.
+      -- Packed rather than stored in a plain local so the differential mode
+      -- compares arity too. codec:Encode used to forward string.gsub's
+      -- substitution count as a second value; it now answers with exactly
+      -- the encoded string, and a reference module from before that change
+      -- must show up here as a divergence rather than being truncated away.
       local encoded = Pack(codec:Encode(payload))
       local decoded = Pack(codec:Decode(encoded[1]))
       assert(decoded[1] == payload, "custom codec round trip failed")

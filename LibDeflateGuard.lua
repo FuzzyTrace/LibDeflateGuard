@@ -1,5 +1,5 @@
 --[[--
-LibDeflateGuard 1.1.1 <br>
+LibDeflateGuard 1.1.2 <br>
 Pure Lua compressor and decompressor with high compression ratio using
 DEFLATE/zlib format.
 
@@ -87,16 +87,19 @@ local LibDeflateGuard
 
 do
   LibDeflateGuard = {}
-  LibDeflateGuard._VERSION = "1.1.1"
+  LibDeflateGuard._VERSION = "1.1.2"
   LibDeflateGuard._NAME = "LibDeflateGuard"
   LibDeflateGuard._MODULE = "LibDeflateGuard"
   LibDeflateGuard._UPSTREAM_VERSION = "1.0.2-release"
   LibDeflateGuard._COPYRIGHT =
-    "LibDeflateGuard 1.1.1, based on LibDeflate 1.0.2-release. " ..
+    "LibDeflateGuard 1.1.2, based on LibDeflate 1.0.2-release. " ..
       "Copyright (C) 2018-2021 Haoqian He. Licensed under the zlib License."
 end
 
-LibDeflateGuard.ERRORS = {
+-- Every failure path reads this private table. LibDeflateGuard.ERRORS below
+-- is an inspection copy, like DEFAULT_LIMITS and LIMIT_PRESETS: a consumer
+-- that writes to the public table cannot change the code a decode returns.
+local _ERRORS = {
   INVALID_ARGUMENT = "invalid_argument",
   INPUT_LIMIT_EXCEEDED = "input_limit_exceeded",
   OUTPUT_LIMIT_EXCEEDED = "output_limit_exceeded",
@@ -113,6 +116,9 @@ LibDeflateGuard.ERRORS = {
   INVALID_PRINT = "invalid_print",
   INTERNAL_ERROR = "internal_error"
 }
+
+LibDeflateGuard.ERRORS = {}
+for key, code in pairs(_ERRORS) do LibDeflateGuard.ERRORS[key] = code end
 
 -- The "addon" preset is the default. It is sized for a game client, where a
 -- decode runs on the frame thread and a rejected message must not be felt.
@@ -486,6 +492,10 @@ function LibDeflateGuard:Adler32(str)
   end
   return (b * 65536 + a) % 4294967296
 end
+
+-- Bound at definition time. The zlib decoder verifies a member's checksum
+-- with this, so the check must not be reachable through the public table.
+local _Adler32 = LibDeflateGuard.Adler32
 
 -- Compare adler32 checksum.
 -- adler32 should be compared with a mod to avoid sign problem
@@ -2049,7 +2059,7 @@ local function CompressZlibInternal(str, dictionary, configs)
   Deflate(configs, WriteBits, WriteString, FlushWriter, str, dictionary)
   FlushWriter(_FLUSH_MODE_BYTE_BOUNDARY)
 
-  local adler32 = LibDeflateGuard:Adler32(str)
+  local adler32 = _Adler32(LibDeflateGuard, str)
 
   -- Most significant byte first
   local byte3 = adler32 % 256
@@ -2893,7 +2903,7 @@ local function DecompressZlibInternal(str, dictionary, limits)
 
   local adler32_expected = adler_byte0 * 16777216 + adler_byte1 * 65536 +
                              adler_byte2 * 256 + adler_byte3
-  local adler32_actual = LibDeflateGuard:Adler32(result)
+  local adler32_actual = _Adler32(LibDeflateGuard, result)
   if not IsEqualAdler32(adler32_expected, adler32_actual) then
     return nil, -15 -- Adler32 checksum does not match
   end
@@ -2905,49 +2915,43 @@ end
 
 local function MapDecompressStatus(status)
   if status == 2 then
-    return LibDeflateGuard.ERRORS.TRUNCATED_INPUT
+    return _ERRORS.TRUNCATED_INPUT
   elseif status == -15 then
-    return LibDeflateGuard.ERRORS.CHECKSUM_MISMATCH
+    return _ERRORS.CHECKSUM_MISMATCH
   elseif status == -16 then
-    return LibDeflateGuard.ERRORS.DICTIONARY_REQUIRED
+    return _ERRORS.DICTIONARY_REQUIRED
   elseif status == -17 then
-    return LibDeflateGuard.ERRORS.DICTIONARY_MISMATCH
+    return _ERRORS.DICTIONARY_MISMATCH
   elseif status == _STATUS_OUTPUT_LIMIT then
-    return LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED
+    return _ERRORS.OUTPUT_LIMIT_EXCEEDED
   elseif status == _STATUS_BLOCK_LIMIT then
-    return LibDeflateGuard.ERRORS.BLOCK_LIMIT_EXCEEDED
+    return _ERRORS.BLOCK_LIMIT_EXCEEDED
   elseif status == _STATUS_SYMBOL_LIMIT then
-    return LibDeflateGuard.ERRORS.SYMBOL_LIMIT_EXCEEDED
+    return _ERRORS.SYMBOL_LIMIT_EXCEEDED
   elseif status == _STATUS_WORK_LIMIT then
-    return LibDeflateGuard.ERRORS.WORK_LIMIT_EXCEEDED
+    return _ERRORS.WORK_LIMIT_EXCEEDED
   end
-  return LibDeflateGuard.ERRORS.INVALID_STREAM
+  return _ERRORS.INVALID_STREAM
 end
 
 local function DecompressGuarded(internal, str, dictionary, limits,
                                  check_dictionary)
-  if type(str) ~= "string" then
-    return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-  end
+  if type(str) ~= "string" then return nil, _ERRORS.INVALID_ARGUMENT end
 
   local resolved_limits = ResolveDecompressLimits(limits)
-  if not resolved_limits then
-    return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-  end
+  if not resolved_limits then return nil, _ERRORS.INVALID_ARGUMENT end
   if #str > resolved_limits.max_input_bytes then
-    return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED
+    return nil, _ERRORS.INPUT_LIMIT_EXCEEDED
   end
 
   if check_dictionary then
     local dictionary_valid = IsValidDictionary(dictionary)
-    if not dictionary_valid then
-      return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-    end
+    if not dictionary_valid then return nil, _ERRORS.INVALID_ARGUMENT end
   end
 
   local output, internal_status = internal(str, dictionary, resolved_limits)
   if not output then return nil, MapDecompressStatus(internal_status) end
-  if internal_status ~= 0 then return nil, LibDeflateGuard.ERRORS.TRAILING_DATA end
+  if internal_status ~= 0 then return nil, _ERRORS.TRAILING_DATA end
   return output, 0
 end
 
@@ -2958,7 +2962,7 @@ local function DecompressSafely(internal, str, dictionary, limits,
   local ok, result, status = pcall(DecompressGuarded, internal, str, dictionary,
                                    limits, check_dictionary)
 
-  if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
+  if not ok then return nil, _ERRORS.INTERNAL_ERROR end
   return result, status
 end
 
@@ -3250,7 +3254,11 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
         ("Usage: codec:Encode(str):" .. " 'str' - string expected got '%s'."):format(
           type(str)), 2)
     end
-    return string_gsub(str, encode_pattern, encode_repl)
+    -- Exactly one value. string_gsub also answers with a substitution count,
+    -- and forwarding it made codec:Decode(codec:Encode(str)) read that count
+    -- as the decoder's input cap. The channel encoders return this directly,
+    -- so they inherit the same arity.
+    return (string_gsub(str, encode_pattern, encode_repl))
   end
 
   local decode_tblsize = #decode_patterns
@@ -3268,9 +3276,7 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
   local escape_scan_pattern = "[" .. escape_for_gsub(escape_chars) .. "]"
 
   function codec:Decode(str, max_input_bytes)
-    if type(str) ~= "string" then
-      return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-    end
+    if type(str) ~= "string" then return nil, _ERRORS.INVALID_ARGUMENT end
     -- A codec decode is linear, so an oversized input is a stall rather than
     -- an amplification. It still runs before any decompress budget applies,
     -- so it carries its own cap. Callers almost never override it, so the
@@ -3278,13 +3284,11 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
     local cap = _default_codec_input_bytes
     if max_input_bytes ~= nil then
       cap = ResolveCodecInputCap(max_input_bytes, cap)
-      if not cap then return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT end
+      if not cap then return nil, _ERRORS.INVALID_ARGUMENT end
     end
-    if #str > cap then
-      return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED
-    end
+    if #str > cap then return nil, _ERRORS.INPUT_LIMIT_EXCEEDED end
     if string_find(str, decode_fail_pattern) then
-      return nil, LibDeflateGuard.ERRORS.INVALID_ESCAPE
+      return nil, _ERRORS.INVALID_ESCAPE
     end
     local index = 1
     while true do
@@ -3292,7 +3296,7 @@ function LibDeflateGuard:CreateCodec(reserved_chars, escape_chars, map_chars)
       if not pos then break end
       local suffix = string_byte(str, pos + 1)
       if not suffix or not escape_suffix_bytes[string_byte(str, pos)][suffix] then
-        return nil, LibDeflateGuard.ERRORS.INVALID_ESCAPE
+        return nil, _ERRORS.INVALID_ESCAPE
       end
       index = pos + 2
     end
@@ -3333,9 +3337,7 @@ end
 -- @return [string/nil] The decoded string if succeeds. nil if fails.
 -- @see LibDeflateGuard:EncodeForWoWAddonChannel
 function LibDeflateGuard:DecodeForWoWAddonChannel(str, max_input_bytes)
-  if type(str) ~= "string" then
-    return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-  end
+  if type(str) ~= "string" then return nil, _ERRORS.INVALID_ARGUMENT end
   if not _addon_channel_codec then
     _addon_channel_codec = GenerateWoWAddonChannelCodec()
   end
@@ -3343,10 +3345,10 @@ function LibDeflateGuard:DecodeForWoWAddonChannel(str, max_input_bytes)
   -- Indexing codec.Decode happens before pcall is entered, so guard the
   -- codec itself. This decoder's contract is that it never throws.
   if type(codec) ~= "table" or type(codec.Decode) ~= "function" then
-    return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR
+    return nil, _ERRORS.INTERNAL_ERROR
   end
   local ok, result, status = pcall(codec.Decode, codec, str, max_input_bytes)
-  if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
+  if not ok then return nil, _ERRORS.INTERNAL_ERROR end
   return result, status
 end
 
@@ -3404,9 +3406,7 @@ end
 -- @return [string/nil] The decoded string if succeeds. nil if fails.
 -- @see LibDeflateGuard:EncodeForWoWChatChannel
 function LibDeflateGuard:DecodeForWoWChatChannel(str, max_input_bytes)
-  if type(str) ~= "string" then
-    return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-  end
+  if type(str) ~= "string" then return nil, _ERRORS.INVALID_ARGUMENT end
   if not _chat_channel_codec then
     _chat_channel_codec = GenerateWoWChatChannelCodec()
   end
@@ -3414,10 +3414,10 @@ function LibDeflateGuard:DecodeForWoWChatChannel(str, max_input_bytes)
   -- Indexing codec.Decode happens before pcall is entered, so guard the
   -- codec itself. This decoder's contract is that it never throws.
   if type(codec) ~= "table" or type(codec.Decode) ~= "function" then
-    return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR
+    return nil, _ERRORS.INTERNAL_ERROR
   end
   local ok, result, status = pcall(codec.Decode, codec, str, max_input_bytes)
-  if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
+  if not ok then return nil, _ERRORS.INTERNAL_ERROR end
   return result, status
 end
 
@@ -3678,20 +3678,18 @@ local function DecodeForPrintInternal(str)
 end
 
 function LibDeflateGuard:DecodeForPrint(str, max_input_bytes)
-  if type(str) ~= "string" then
-    return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT
-  end
+  if type(str) ~= "string" then return nil, _ERRORS.INVALID_ARGUMENT end
   -- This decode runs before any decompress budget applies, so it carries its
   -- own cap. See _default_print_input_bytes for how the default is derived.
   local cap = _default_print_input_bytes
   if max_input_bytes ~= nil then
     cap = ResolveCodecInputCap(max_input_bytes, cap)
-    if not cap then return nil, LibDeflateGuard.ERRORS.INVALID_ARGUMENT end
+    if not cap then return nil, _ERRORS.INVALID_ARGUMENT end
   end
-  if #str > cap then return nil, LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED end
+  if #str > cap then return nil, _ERRORS.INPUT_LIMIT_EXCEEDED end
   local ok, result = pcall(DecodeForPrintInternal, str)
-  if not ok then return nil, LibDeflateGuard.ERRORS.INTERNAL_ERROR end
-  if result == nil then return nil, LibDeflateGuard.ERRORS.INVALID_PRINT end
+  if not ok then return nil, _ERRORS.INTERNAL_ERROR end
+  if result == nil then return nil, _ERRORS.INVALID_PRINT end
   return result
 end
 
@@ -3726,6 +3724,9 @@ end
 \--dict <filename> specify the file that contains
 the entire preset dictionary.
 \-h    give this help.
+\--limits <none/addon/generous> apply a decode budget. Default is none,
+because a file named on the command line is not the untrusted frame-thread
+input the budgets exist for.
 \--strategy <fixed/huffman_only/dynamic> specify a special compression strategy.
 \-v    print the version and copyright info.
 \--zlib  use zlib format instead of raw deflate.
@@ -3750,6 +3751,26 @@ if io and os and debug and _G.arg then
     local level
     local strategy
     local dictionary
+
+    -- The decode budgets exist to bound untrusted input decoded on a game
+    -- client's frame thread. A file the user named on their own command line
+    -- is not that, and a tool that cannot decompress what it just compressed
+    -- is broken, so the CLI decodes unbounded by default. "--limits" opts
+    -- back into a shipped preset to exercise the guard from a shell.
+    local unbounded = 2 ^ 40 -- exact in a double, larger than any Lua string
+    local cli_limit_presets = {
+      none = {
+        max_input_bytes = unbounded,
+        max_output_bytes = unbounded,
+        max_blocks = unbounded,
+        max_symbols = unbounded,
+        max_work_units = unbounded
+      },
+      addon = LibDeflateGuard.LIMIT_PRESETS.addon,
+      generous = LibDeflateGuard.LIMIT_PRESETS.generous
+    }
+    local limits = cli_limit_presets.none
+
     while (arg[i]) do
       local a = arg[i]
       if a == "-h" then
@@ -3762,6 +3783,8 @@ if io and os and debug and _G.arg then
                 "  --dict <filename> specify the file that contains" ..
                 " the entire preset dictionary.\n" ..
                 "  -h    give this help.\n" ..
+                "  --limits <none/addon/generous> apply a decode budget." ..
+                " Default is none.\n" ..
                 "  --strategy <fixed/huffman_only/dynamic>" ..
                 " specify a special compression strategy.\n" ..
                 "  -v    print the version and copyright info.\n" ..
@@ -3797,6 +3820,16 @@ if io and os and debug and _G.arg then
         dictionary = LibDeflateGuard:CreateDictionary(dict_str, #dict_str,
                                                       LibDeflateGuard:Adler32(
                                                         dict_str))
+      elseif a == "--limits" then
+        i = i + 1
+        local preset_name = arg[i]
+        limits = preset_name and cli_limit_presets[preset_name]
+        if not limits then
+          io.stderr:write(
+            ("LibDeflateGuard: --limits must be one of none, addon," ..
+              " generous, got '%s'"):format(tostring(preset_name)))
+          os.exit(1)
+        end
       elseif a == "--strategy" then
         -- Not sure if I should check error here
         -- If I do, redudant code.
@@ -3840,6 +3873,7 @@ if io and os and debug and _G.arg then
     local input_data = input:read("*all")
     local configs = {level = level, strategy = strategy}
     local output_data
+    local decode_error
     if not is_decompress then
       if not is_zlib then
         if not dictionary then
@@ -3860,23 +3894,33 @@ if io and os and debug and _G.arg then
     else
       if not is_zlib then
         if not dictionary then
-          output_data = LibDeflateGuard:DecompressDeflate(input_data)
+          output_data, decode_error = LibDeflateGuard:DecompressDeflate(
+                                        input_data, limits)
         else
-          output_data = LibDeflateGuard:DecompressDeflateWithDict(input_data,
-                                                                  dictionary)
+          output_data, decode_error = LibDeflateGuard:DecompressDeflateWithDict(
+                                        input_data, dictionary, limits)
         end
       else
         if not dictionary then
-          output_data = LibDeflateGuard:DecompressZlib(input_data)
+          output_data, decode_error = LibDeflateGuard:DecompressZlib(input_data,
+                                                                     limits)
         else
-          output_data = LibDeflateGuard:DecompressZlibWithDict(input_data,
-                                                               dictionary)
+          output_data, decode_error = LibDeflateGuard:DecompressZlibWithDict(
+                                        input_data, dictionary, limits)
         end
       end
     end
 
     if not output_data then
-      io.stderr:write("LibDeflateGuard: Decompress fails.")
+      if is_decompress then
+        -- The reason matters here: a budget rejection and a corrupt member
+        -- are very different problems for whoever ran the command.
+        io.stderr:write(
+          ("LibDeflateGuard: Decompress fails. Reason: %s"):format(
+            tostring(decode_error)))
+      else
+        io.stderr:write("LibDeflateGuard: Compress fails.")
+      end
       os.exit(1)
     end
 
