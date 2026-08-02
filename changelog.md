@@ -1,3 +1,16 @@
+### LibDeflateGuard v1.1.1
+
+- No functional change. Apart from the version strings, `LibDeflateGuard.lua`
+  is identical to v1.1.0, so there is no reason to upgrade for the library
+  itself.
+- Repository and CI only. The release workflow can publish generated
+  documentation to `gh-pages` again; its `GITHUB_TOKEN` had been read-only
+  since the fork was created, so every attempt had failed and the published
+  docs still described the pre-rename `LibDeflate.lua`. The `luaunit` install
+  now retries, having flaked on a macOS runner when luarocks.org failed to
+  serve a rockspec. The GitHub Actions used by CI moved to releases running on
+  Node 24, ahead of the Node 20 runtime being retired.
+
 ### LibDeflateGuard v1.1.0
 
 - **Breaking.** The default decode policy is now the addon-sized one. It was
