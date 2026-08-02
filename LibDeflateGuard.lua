@@ -1,5 +1,5 @@
 --[[--
-LibDeflateGuard 1.1.0 <br>
+LibDeflateGuard 1.1.1 <br>
 Pure Lua compressor and decompressor with high compression ratio using
 DEFLATE/zlib format.
 
@@ -87,12 +87,12 @@ local LibDeflateGuard
 
 do
   LibDeflateGuard = {}
-  LibDeflateGuard._VERSION = "1.1.0"
+  LibDeflateGuard._VERSION = "1.1.1"
   LibDeflateGuard._NAME = "LibDeflateGuard"
   LibDeflateGuard._MODULE = "LibDeflateGuard"
   LibDeflateGuard._UPSTREAM_VERSION = "1.0.2-release"
   LibDeflateGuard._COPYRIGHT =
-    "LibDeflateGuard 1.1.0, based on LibDeflate 1.0.2-release. " ..
+    "LibDeflateGuard 1.1.1, based on LibDeflate 1.0.2-release. " ..
       "Copyright (C) 2018-2021 Haoqian He. Licensed under the zlib License."
 end
 
