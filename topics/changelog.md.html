@@ -53,6 +53,46 @@
 <div id="content">
 
 
+<h3>LibDeflateGuard unreleased</h3>
+
+<ul>
+    <li><strong>Added.</strong> <code>LibDeflateGuard.WithPolicy(policy)</code> returns an object bound to
+    one decode policy. It carries the whole budget: the decompressors take the
+    policy, the codec decoders take an input cap derived from the policy's
+    <code>max_input_bytes</code> using the ratios this module already applies to its own
+    defaults, and the compressors take a derived input cap too. This removes
+    the coupling the README used to document as "a caller that raises
+    <code>max_input_bytes</code> must raise these to match", and retires the positional
+    cap parameters as the recommended call shape. Those parameters are
+    unchanged and still work.</li>
+</ul>
+
+<p>  The resolved policy is held in an upvalue, not a field, so mutating the
+  table passed to <code>WithPolicy</code> or writing to the instance cannot change what
+  the instance enforces. That is the property <code>LIMIT_PRESETS</code> and
+  <code>DEFAULT_LIMITS</code> already have. An invalid policy is reported as
+  <code>nil, invalid_argument</code> by the same validator the <code>limits</code> parameter uses,
+  rather than raised.</p>
+
+<ul>
+    <li><strong>Added.</strong> The four compress entry points accept <code>max_input_bytes</code> in their
+    existing configuration table. Omitting it means no cap, which is the
+    behaviour of every earlier release. A malformed cap raises, like every other
+    malformed compression argument; an input larger than a well-formed cap
+    returns <code>nil</code> plus <code>ERRORS.INPUT_LIMIT_EXCEEDED</code>, the shape the decode path
+    uses. Both paths return exactly two values.</li>
+</ul>
+
+<p>  Declared as a table key rather than as a trailing positional argument on
+  purpose. A trailing optional argument on a function whose natural argument
+  is the output of a multi-value function is what made the v1.1.1 nesting bug
+  possible.</p>
+
+<ul>
+    <li><strong>Behaviour change.</strong> A <code>configs</code> table containing <code>max_input_bytes</code> used to
+    raise as an unsupported key. It is now accepted.</li>
+</ul>
+
 <h3>LibDeflateGuard v1.1.2</h3>
 
 <ul>

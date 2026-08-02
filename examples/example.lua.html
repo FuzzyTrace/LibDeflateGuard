@@ -161,7 +161,34 @@ freely, subject to the following restrictions:
 <span class="global">assert</span>(#compress_zlib_with_dict &lt; #compress_zlib)
 <span class="keyword">local</span> decompress_zlib_with_dict = LibDeflateGuard:DecompressZlibWithDict(
                                     compress_zlib_with_dict, dict)
-<span class="global">assert</span>(decompress_zlib_with_dict == example_input)</pre>
+<span class="global">assert</span>(decompress_zlib_with_dict == example_input)
+
+<span class="comment">-------------------------------------------------------------------------------
+</span><span class="comment">-------------------------------------------------------------------------------
+</span><span class="comment">-------------------------------------------------------------------------------
+</span>
+<span class="comment">--- State the decode budget once, instead of on every call.
+</span><span class="comment">-- The instance derives the codec input caps and the compression input cap
+</span><span class="comment">-- from the policy's max_input_bytes, so they cannot drift apart, and its
+</span><span class="comment">-- methods nest directly because they take no trailing cap argument.
+</span><span class="keyword">local</span> guard = <span class="global">assert</span>(LibDeflateGuard.WithPolicy(
+                       LibDeflateGuard.LIMIT_PRESETS.generous))
+
+<span class="global">assert</span>(guard:DecompressDeflate(guard:CompressDeflate(example_input)) ==
+         example_input)
+<span class="global">assert</span>(guard:DecompressDeflate(guard:DecodeForPrint(
+                                 guard:EncodeForPrint(
+                                   guard:CompressDeflate(example_input)))) ==
+         example_input)
+
+<span class="comment">-- Compression can refuse an over-budget input rather than stalling on it.
+</span><span class="comment">-- This is the only compression failure that answers with a code instead of
+</span><span class="comment">-- raising: a malformed cap is still a programmer error and still raises.
+</span><span class="keyword">local</span> refused, compress_error = LibDeflateGuard:CompressDeflate(
+                                  <span class="global">string</span>.rep(<span class="string">"x"</span>, <span class="number">4096</span>),
+                                  {max_input_bytes = <span class="number">1024</span>})
+<span class="global">assert</span>(refused == <span class="keyword">nil</span>)
+<span class="global">assert</span>(compress_error == LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED)</pre>
 
 
 </div> <!-- id="content" -->

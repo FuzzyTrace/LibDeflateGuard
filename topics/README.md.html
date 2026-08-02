@@ -91,6 +91,11 @@ preserved.</p>
     symbol, and deterministic work-unit limits.</li>
     <li>Codec decoders enforce their own input cap, because they run before any
     decompression budget applies.</li>
+    <li><code>LibDeflateGuard.WithPolicy(policy)</code> binds one policy to an object that
+    carries the whole budget, so a decompress policy and a codec cap cannot
+    drift apart.</li>
+    <li>The compressors accept an optional input cap, because compressing a
+    user-pasted string on a frame thread is the normal case, not an edge case.</li>
     <li>Decoder and channel-decode failures return stable symbolic error codes,
     including for malformed or wrongly typed untrusted input.</li>
     <li>Raw Deflate and zlib members reject complete trailing bytes.</li>
@@ -204,6 +209,79 @@ Mutating them does not alter the private defaults enforced by the decoder.</p>
 <p>These are per-call budgets. Bounding a <em>stream</em> of messages needs the caller's
 transport context and remains the caller's job.</p>
 
+<h3>A bound policy instance</h3>
+
+<p>Passing a policy to every decompress call, and a matching cap to every codec
+decode, is the shape that has to be kept in step by hand. <code>WithPolicy</code> binds
+one policy to an object that carries the whole budget:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+
+<span class="keyword">local</span> payload = guard:DecodeForPrint(pasted)
+<span class="keyword">local</span> message = guard:DecompressDeflate(payload)
+</pre>
+
+
+<p>The instance accepts exactly the policy shapes the <code>limits</code> parameter accepts:
+a <code>LIMIT_PRESETS</code> entry, a partial table whose omitted keys fall back to the
+<code>addon</code> defaults, or nothing at all. An invalid policy is reported rather than
+raised, so the same code that reads a policy out of saved variables can check
+it:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard, policy_error = LibDeflateGuard.WithPolicy(user_policy)
+<span class="keyword">if</span> <span class="keyword">not</span> guard <span class="keyword">then</span>
+  <span class="global">print</span>(<span class="string">"Rejected policy:"</span>, policy_error) <span class="comment">-- invalid_argument
+</span><span class="keyword">end</span>
+</pre>
+
+
+<p>It exposes the budgeted surface:</p>
+
+<ul>
+    <li><code>DecompressDeflate(str)</code>, <code>DecompressDeflateWithDict(str, dictionary)</code>,
+    <code>DecompressZlib(str)</code>, <code>DecompressZlibWithDict(str, dictionary)</code></li>
+    <li><code>DecodeForPrint(str)</code>, <code>DecodeForWoWAddonChannel(str)</code>,
+    <code>DecodeForWoWChatChannel(str)</code></li>
+    <li><code>CompressDeflate(str, configs)</code>, <code>CompressDeflateWithDict(str, dictionary, configs)</code>, <code>CompressZlib(str, configs)</code>,
+    <code>CompressZlibWithDict(str, dictionary, configs)</code></li>
+    <li><code>CreateCodec(reserved_chars, escape_chars, map_chars)</code>, whose codec decodes
+    under the instance's derived cap</li>
+</ul>
+
+<p>and, unbudgeted and unchanged, <code>EncodeForPrint</code>, <code>EncodeForWoWAddonChannel</code>,
+<code>EncodeForWoWChatChannel</code>, <code>CreateDictionary</code> and <code>Adler32</code>, so a whole
+pipeline can be written against the instance. An encoder's input is the
+caller's own bytes and is already bounded by the compression cap in a
+compress-then-encode pipeline, so giving the encoders a failure return would
+add an error path to functions that have none.</p>
+
+<p><code>GetPolicy()</code> and <code>GetCodecLimits()</code> return fresh copies of the enforced
+numbers. Like <code>LIMIT_PRESETS</code> and <code>DEFAULT_LIMITS</code> they are for inspection:
+mutating what they return, or mutating the table originally passed to
+<code>WithPolicy</code>, cannot change what the instance enforces.</p>
+
+<p>The bound decoders take no policy or cap argument, and ignore anything passed
+after the ones documented above. That is deliberate. A compressor answers with
+two values, so the nested form works on the instance:</p>
+
+
+<pre>
+guard:DecompressDeflate(guard:CompressDeflate(message))
+</pre>
+
+
+<p>On the module itself the same nesting puts the compressor's <code>padding_bitlen</code>
+into the decompressor's <code>limits</code> slot, which is not a policy and is refused
+with <code>invalid_argument</code>. Use the instance, or name the intermediate value.</p>
+
+<p>The instance retires the positional cap parameters as the recommended shape.
+It does not remove them: <code>DecompressDeflate(str, limits)</code>,
+<code>DecodeForPrint(str, max_input_bytes)</code> and the rest are unchanged.</p>
+
 <p><code>max_symbols</code> counts every Huffman decode attempt, including dynamic-header,
 literal/length, distance, and end-of-block symbols. <code>max_work_units</code> counts
 blocks, Huffman symbols, output bytes, and dynamic-table entries. It is a
@@ -235,6 +313,38 @@ multiplier: the default 512 KiB output cap implies a transient peak of roughly
 <p>Compression output remains wire-compatible with LibDeflate and RFC 1951.
 Compression and dictionary construction are trusted, programmer-facing APIs
 and retain their original argument-error behavior.</p>
+
+<p>Compression is nevertheless slow in pure Lua, and roughly linear in the length
+of its input: measured on <code>luajit -joff</code> as a proxy for the World of Warcraft
+interpreter, level 6 runs at about 1.9 MB/s, so a one-megabyte user-pasted
+string is a multi-second freeze on the frame thread. The four compress entry
+points therefore accept an optional cap in their existing configuration table:</p>
+
+
+<pre>
+<span class="keyword">local</span> compressed, compress_error =
+  LibDeflateGuard:CompressDeflate(pasted, {level = <span class="number">6</span>, max_input_bytes = <span class="number">65536</span>})
+<span class="keyword">if</span> <span class="keyword">not</span> compressed <span class="keyword">then</span>
+  <span class="global">print</span>(<span class="string">"Rejected:"</span>, compress_error) <span class="comment">-- input_limit_exceeded
+</span><span class="keyword">end</span>
+</pre>
+
+
+<p>Omitting the key means no cap, which is the behavior of every earlier release.
+A malformed cap — the wrong type, zero, negative, fractional, infinite —
+raises, exactly as every other malformed compression argument does. An input
+that merely exceeds a well-formed cap is a runtime outcome, not a programmer
+error, so it returns <code>nil</code> plus
+<code>LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED</code>, the same shape the decode path
+uses. Both paths return exactly two values, so no caller's argument list
+changes shape.</p>
+
+<p>A policy instance derives this cap from its own <code>max_input_bytes</code>, so
+<code>guard:CompressDeflate(str)</code> is capped without a configuration table. Note
+what that does and does not promise: it bounds the bytes going in, which is
+what the stall is proportional to. It does not guarantee the compressed result
+clears the same policy's decompress input cap, because an incompressible
+payload at exactly the cap deflates to a few bytes more than it started with.</p>
 
 <p>The original codec names are retained:</p>
 
@@ -292,8 +402,11 @@ LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
 <p>The print codec emits 0.75 bytes per input byte, so anything above 4/3 of
 <code>max_input_bytes</code> cannot produce a member that a default-limits decompress
 would accept. The channel codecs never grow their input, so their cap is
-<code>max_input_bytes</code> itself. A caller that raises <code>max_input_bytes</code> must raise
-these to match.</p>
+<code>max_input_bytes</code> itself.</p>
+
+<p>A caller that raises <code>max_input_bytes</code> should use <code>WithPolicy</code> rather than
+raising each cap by hand: an instance applies exactly these ratios to its own
+policy, so the codec caps and the decompress budget cannot drift apart.</p>
 
 <p><a name="Security_scope"></a></p>
 <h2>Security scope</h2>
@@ -335,9 +448,15 @@ luajit tests/GuardTest.lua
 
 <p>It covers stock LibDeflate/LibStub isolation, private addon export, stored,
 fixed, dynamic, and multi-block vectors, malformed/truncated/trailing members,
-all resource limits, limit presets, codec input caps, exception containment,
-all-byte addon-channel round trips, malformed escapes, zlib framing, and an
+all resource limits, limit presets, codec input caps, the compression input
+cap, policy instances and their derived caps, exception containment, all-byte
+addon-channel round trips, malformed escapes, zlib framing, and an
 RCLootCouncil compatibility fixture.</p>
+
+<p>Its round-trip assertions are written in the nested form a caller actually
+types — <code>guard:DecodeForPrint(guard:EncodeForPrint(x))</code> rather than a local
+holding the encode result — because storing a result in a local truncates
+multiple returns and hides exactly the class of fault that reached v1.1.1.</p>
 
 <p>It also carries two adversarial vectors that a mutation fuzzer cannot reach,
 because both are well-formed RFC 1951 rather than corrupted: a maximum

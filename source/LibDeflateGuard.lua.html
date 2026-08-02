@@ -95,6 +95,11 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
 <h2><a href="#Functions">Functions</a></h2>
 <table class="function_list">
 	<tr>
+	<td class="name" ><a href="#LibDeflateGuard.WithPolicy">LibDeflateGuard.WithPolicy (policy)</a></td>
+	<td class="summary">Bind a decode policy to an object, so a caller states its budget once
+ instead of on every call.</td>
+	</tr>
+	<tr>
 	<td class="name" ><a href="#LibDeflateGuard:Adler32">LibDeflateGuard:Adler32 (str)</a></td>
 	<td class="summary">Calculate the Adler-32 checksum of the string.</td>
 	</tr>
@@ -160,6 +165,14 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
 	<td class="summary">Encode the string to make it ready to be transmitted in World of
  Warcraft chat channel.</td>
 	</tr>
+	<tr>
+	<td class="name" ><a href="#instance:GetCodecLimits">instance:GetCodecLimits ()</a></td>
+	<td class="summary">The caps derived from the policy, as a fresh copy per call.</td>
+	</tr>
+	<tr>
+	<td class="name" ><a href="#instance:GetPolicy">instance:GetPolicy ()</a></td>
+	<td class="summary">The policy this instance enforces, as a fresh copy per call.</td>
+	</tr>
 </table>
 <h2><a href="#Tables">Tables</a></h2>
 <table class="function_list">
@@ -180,6 +193,72 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
     <h2 class="section-header "><a name="Functions"></a>Functions</h2>
 
     <dl class="function">
+    <dt>
+    <a name = "LibDeflateGuard.WithPolicy"></a>
+    <strong>LibDeflateGuard.WithPolicy (policy)</strong>
+    </dt>
+    <dd>
+    Bind a decode policy to an object, so a caller states its budget once
+ instead of on every call.  <br></p>
+
+<p> The returned instance carries the whole budget: the decompressors take the
+ policy, the codec decoders take an input cap derived from the policy's
+ max<em>input</em>bytes, and the compressors take a derived input cap too. A caller
+ therefore never mixes bound and unbound calls, and never has to keep a
+ decompress policy and a codec cap in step by hand.</p>
+
+<p> The derivations follow the ones this module applies to its own defaults at
+ load time. The print codec emits 0.75 bytes per input byte, so its cap is
+ 4/3 of max<em>input</em>bytes. The channel codecs never grow their input, so their
+ cap is max<em>input</em>bytes itself. Compression is bounded on the bytes going in
+ rather than the bytes coming out, because that is what the stall is
+ proportional to and what makes the compressed result fit the same policy's
+ decompress input cap on the way back.</p>
+
+<p> The policy is resolved once, at construction, by the same validator the
+ "limits" parameter uses, and the resolved numbers are held in an upvalue
+ rather than in a field. Mutating the table passed to this function
+ afterwards, or writing to the returned instance, cannot change what the
+ instance enforces. That is the property LIMIT<em>PRESETS and DEFAULT</em>LIMITS
+ already have.</p>
+
+<p> Encoders, CreateDictionary and Adler32 are exposed on the instance
+ unchanged. They are not budgeted: an encoder's input is the caller's own
+ bytes and is already bounded by the compression cap in the normal
+ compress-then-encode pipeline, and giving them a failure return would add a
+ new error path to functions that have none. They are present so that a
+ whole pipeline can be written against the instance.
+
+
+    <h3>Parameters:</h3>
+    <ul>
+        <li><span class="parameter">policy</span>
+         [table/nil] A LIMIT_PRESETS entry, a partial table of limit
+ keys, or nil for the defaults. Exactly what the "limits" parameter of the
+ decompressors accepts.
+        </li>
+    </ul>
+
+    <h3>Returns:</h3>
+    <ol>
+        <li>
+        [table/nil] The policy instance, or nil if the policy is invalid.</li>
+        <li>
+         [nil/string] LibDeflateGuard.ERRORS.INVALID_ARGUMENT if the policy
+ is invalid. An invalid policy is reported rather than raised, so that the
+ same code that reads a policy out of saved variables can check it.</li>
+    </ol>
+
+
+
+    <h3>Usage:</h3>
+    <ul>
+        <pre class="example"><span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS
+                                           .generous)
+<span class="keyword">local</span> payload, decode_error = guard:DecodeForPrint(pasted)</pre>
+    </ul>
+
+</dd>
     <dt>
     <a name = "LibDeflateGuard:Adler32"></a>
     <strong>LibDeflateGuard:Adler32 (str)</strong>
@@ -230,14 +309,17 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
     <h3>Returns:</h3>
     <ol>
         <li>
-        [string] The compressed data.</li>
+        [string/nil] The compressed data, or nil if the input is longer
+ than configs.max<em>input</em>bytes.</li>
         <li>
-         [integer] The number of bits padded at the end of output.
+         [integer/string] The number of bits padded at the end of output.
  0 &lt;= bits &lt; 8  <br>
  This means the most significant "bits" of the last byte of the returned
  compressed data are padding bits and they don't affect decompression.
  You don't need to use this value unless you want to do some postprocessing
- to the compressed data.</li>
+ to the compressed data.
+ If the first return value is nil, this is
+ LibDeflateGuard.ERRORS.INPUT<em>LIMIT</em>EXCEEDED instead.</li>
     </ol>
 
 
@@ -275,14 +357,17 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
     <h3>Returns:</h3>
     <ol>
         <li>
-        [string] The compressed data.</li>
+        [string/nil] The compressed data, or nil if the input is longer
+ than configs.max<em>input</em>bytes.</li>
         <li>
-         [integer] The number of bits padded at the end of output.
+         [integer/string] The number of bits padded at the end of output.
  0 &lt;= bits &lt; 8  <br>
  This means the most significant "bits" of the last byte of the returned
  compressed data are padding bits and they don't affect decompression.
  You don't need to use this value unless you want to do some postprocessing
- to the compressed data.</li>
+ to the compressed data.
+ If the first return value is nil, this is
+ LibDeflateGuard.ERRORS.INPUT<em>LIMIT</em>EXCEEDED instead.</li>
     </ol>
 
 
@@ -317,11 +402,14 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
     <h3>Returns:</h3>
     <ol>
         <li>
-        [string] The compressed data.</li>
+        [string/nil] The compressed data, or nil if the input is longer
+ than configs.max<em>input</em>bytes.</li>
         <li>
-         [integer] The number of bits padded at the end of output.
+         [integer/string] The number of bits padded at the end of output.
  Should always be 0.
- Zlib formatted compressed data never has padding bits at the end.</li>
+ Zlib formatted compressed data never has padding bits at the end.
+ If the first return value is nil, this is
+ LibDeflateGuard.ERRORS.INPUT<em>LIMIT</em>EXCEEDED instead.</li>
     </ol>
 
 
@@ -359,11 +447,14 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
     <h3>Returns:</h3>
     <ol>
         <li>
-        [string] The compressed data.</li>
+        [string/nil] The compressed data, or nil if the input is longer
+ than configs.max<em>input</em>bytes.</li>
         <li>
-         [integer] The number of bits padded at the end of output.
+         [integer/string] The number of bits padded at the end of output.
  Should always be 0.
- Zlib formatted compressed data never has padding bits at the end.</li>
+ Zlib formatted compressed data never has padding bits at the end.
+ If the first return value is nil, this is
+ LibDeflateGuard.ERRORS.INPUT<em>LIMIT</em>EXCEEDED instead.</li>
     </ol>
 
 
@@ -423,7 +514,11 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
  parameters, return the codec, which is a encode/decode table.
  The table contains two functions: <br>
  t:Encode(str) returns the encoded string. <br>
- t:Decode(str) returns the decoded string if succeeds. nil if fails.</li>
+ t:Decode(str, max<em>input</em>bytes) returns the decoded string if succeeds,
+ nil plus a code from LibDeflateGuard.ERRORS if it fails. Its input cap
+ defaults to LibDeflateGuard.DEFAULT<em>CODEC</em>LIMITS.channel<em>max</em>input_bytes.
+ Use LibDeflateGuard.WithPolicy(policy):CreateCodec(...) to get a codec
+ whose default cap follows a policy instead.</li>
         <li>
          [nil/string] If the codec is successfully created, return nil.
  If not, return a string that describes the reason why the codec cannot be
@@ -823,6 +918,34 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
 
 
 </dd>
+    <dt>
+    <a name = "instance:GetCodecLimits"></a>
+    <strong>instance:GetCodecLimits ()</strong>
+    </dt>
+    <dd>
+    The caps derived from the policy, as a fresh copy per call.
+
+
+
+
+
+
+
+</dd>
+    <dt>
+    <a name = "instance:GetPolicy"></a>
+    <strong>instance:GetPolicy ()</strong>
+    </dt>
+    <dd>
+    The policy this instance enforces, as a fresh copy per call.
+
+
+
+
+
+
+
+</dd>
 </dl>
     <h2 class="section-header "><a name="Tables"></a>Tables</h2>
 
@@ -878,6 +1001,17 @@ nput the budgets exist <span class="keyword">for</span>.
          The compression strategy. "fixed" to only use fixed deflate
  compression block. "dynamic" to only use dynamic block. "huffman_only" to
  do no LZ77 compression. Only do huffman compression.
+        </li>
+        <li><span class="parameter">max_input_bytes</span>
+         A positive whole number of bytes. If given, an input
+ longer than this is refused with nil plus
+ LibDeflateGuard.ERRORS.INPUT<em>LIMIT</em>EXCEEDED instead of being compressed.
+ Omit it for no cap, which is the pre-1.2 behaviour. Compression is roughly
+ linear in the length of its input and is slow in pure Lua, so an addon
+ compressing a user-pasted string on the frame thread wants a cap even
+ though the bytes are its own. A malformed cap raises, like every other
+ malformed compression argument; a well-formed cap that the input exceeds is
+ a runtime answer, not a programmer error.
         </li>
     </ul>
 
