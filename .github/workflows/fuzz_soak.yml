@@ -1,0 +1,150 @@
+# Nightly randomized decode-path soak
+#
+# tests/FuzzTest.lua scales its entire workload by
+# LIBDEFLATEGUARD_FUZZ_ITERATIONS and draws every input from
+# LIBDEFLATEGUARD_FUZZ_SEED. The rest of CI only ever runs the default
+# single-iteration pass, so the capability exists and is unused. This job runs
+# it wide, with a fresh seed each night.
+#
+# The seed is printed on success and on failure, in the log and in the job
+# summary, because a soak that cannot be replayed is not a regression test.
+# Re-run a failing night by hand through workflow_dispatch with that seed.
+
+name: fuzz_soak
+
+on:
+  schedule:
+    # 04:17 UTC. Off the hour on purpose: scheduled workflows fired on the
+    # hour queue behind everybody else's cron.
+    - cron: "17 4 * * *"
+
+  workflow_dispatch:
+    inputs:
+      seed:
+        description:
+          "PRNG seed, a whole number below 2147483647. Empty picks a random
+          one."
+        required: false
+        default: ""
+      iterations:
+        description: "Workload scale factor. 1 is the single pass the rest of CI runs."
+        required: false
+        default: "1000"
+
+jobs:
+  fuzz_soak:
+    runs-on: ubuntu-latest
+    # The soak is sized for roughly 15 minutes of interpreter time. The
+    # timeout is generous enough that a slow runner does not turn into a
+    # spurious failure, and tight enough that a hang does not bill for six
+    # hours.
+    timeout-minutes: 90
+    env:
+      # FuzzTest pins its own generator to be identical on every interpreter
+      # (AssertGeneratorIsPortable), and lua_test already runs the suite on
+      # all six interpreters at scale 1 on every pull request. What the soak
+      # adds is breadth of input, so it runs on the fastest interpreter
+      # available, which buys the most inputs per minute of runner time.
+      LUA: luajit-2.1.0-beta3
+      LUAROCKS: 3.13.0
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pick the seed and the workload
+        id: workload
+        env:
+          # Read through the environment rather than interpolating into the
+          # script, so a dispatch input cannot inject shell.
+          INPUT_SEED: ${{ github.event.inputs.seed }}
+          INPUT_ITERATIONS: ${{ github.event.inputs.iterations }}
+        run: |
+          set -euo pipefail
+
+          seed="${INPUT_SEED:-}"
+          if [ -z "${seed}" ]; then
+            # FuzzTest rejects a seed that is not a whole number strictly
+            # below 2147483647 rather than run a workload nobody can
+            # reproduce, so generate inside that range.
+            seed="$(shuf -i 0-2147483646 -n 1)"
+          fi
+          case "${seed}" in
+            '' | *[!0-9]*)
+              echo "seed must be a whole number, got '${seed}'" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${seed}" -ge 2147483647 ]; then
+            echo "seed must be below 2147483647, got '${seed}'" >&2
+            exit 1
+          fi
+
+          iterations="${INPUT_ITERATIONS:-}"
+          # Scheduled runs carry no inputs at all, so the dispatch default
+          # does not apply to them and has to be repeated here.
+          if [ -z "${iterations}" ]; then
+            iterations=1000
+          fi
+          case "${iterations}" in
+            '' | *[!0-9]*)
+              echo "iterations must be a whole number, got '${iterations}'" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${iterations}" -lt 1 ]; then
+            echo "iterations must be at least 1" >&2
+            exit 1
+          fi
+
+          echo "LIBDEFLATEGUARD_FUZZ_SEED=${seed}" >> "${GITHUB_ENV}"
+          echo "LIBDEFLATEGUARD_FUZZ_ITERATIONS=${iterations}" >> "${GITHUB_ENV}"
+          echo "seed=${seed}" >> "${GITHUB_OUTPUT}"
+          echo "iterations=${iterations}" >> "${GITHUB_OUTPUT}"
+
+          # Write the seed to the summary before running anything. If the job
+          # is cancelled or times out the seed is still recorded.
+          {
+            echo "## Fuzz soak"
+            echo
+            echo "| Setting | Value |"
+            echo "| --- | --- |"
+            echo "| Seed | \`${seed}\` |"
+            echo "| Iterations | \`${iterations}\` |"
+            echo "| Interpreter | \`${LUA}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "LIBDEFLATEGUARD_FUZZ_SEED=${seed}"
+          echo "LIBDEFLATEGUARD_FUZZ_ITERATIONS=${iterations}"
+
+      - name: Install Lua and Luarocks
+        run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
+
+      - name: Run the soak
+        run: |
+          set -euo pipefail
+          source .github/workflows/script/setenv_lua.sh
+          lua -v
+          echo "replay: LIBDEFLATEGUARD_FUZZ_SEED=${LIBDEFLATEGUARD_FUZZ_SEED} LIBDEFLATEGUARD_FUZZ_ITERATIONS=${LIBDEFLATEGUARD_FUZZ_ITERATIONS} lua tests/FuzzTest.lua"
+          lua tests/FuzzTest.lua
+
+      - name: Report the seed
+        if: always()
+        run: |
+          set -euo pipefail
+          seed="${{ steps.workload.outputs.seed }}"
+          iterations="${{ steps.workload.outputs.iterations }}"
+          replay="LIBDEFLATEGUARD_FUZZ_SEED=${seed} LIBDEFLATEGUARD_FUZZ_ITERATIONS=${iterations} lua tests/FuzzTest.lua"
+
+          echo "soak finished with status ${{ job.status }}"
+          echo "seed ${seed}, iterations ${iterations}"
+          echo "replay: ${replay}"
+
+          {
+            echo
+            echo "Result: **${{ job.status }}**"
+            echo
+            echo "Replay this exact workload:"
+            echo
+            echo '```sh'
+            echo "${replay}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

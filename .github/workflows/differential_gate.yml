@@ -1,0 +1,228 @@
+# Differential gate on decode-path pull requests
+#
+# Checks the latest release tag out into a git worktree, points
+# LIBDEFLATEGUARD_FUZZ_REFERENCE at its LibDeflateGuard.lua, and runs
+# tests/FuzzTest.lua. Every public decode entry point must return an identical
+# tuple to the released module for the same call.
+#
+# The gate BLOCKS. A divergence fails the job.
+#
+# Some divergences are correct: the v1.1.2 codec encoder arity change is one.
+# The escape hatch is a maintainer-applied pull request label,
+# "differential-divergence-ok". With that label the job still finds and prints
+# the divergence, loudly, in the log and in the job summary, but exits 0. The
+# label is applied by a human who has read the diff and decided it is
+# intentional. That is the whole point: an intentional divergence should cost
+# a deliberate act, not a silent green tick.
+#
+# Note the trigger types. "labeled" and "unlabeled" are there so that applying
+# or removing the label re-runs the gate; without them the label can never
+# clear a red check.
+#
+# Note also what is NOT here: a top-level paths: filter. A path-filtered job
+# never reports at all on a pull request that misses the filter, and a
+# required check that never reports deadlocks the merge. The job always runs
+# and works out for itself whether the pull request touches the decode path.
+
+name: differential_gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+  workflow_dispatch:
+
+jobs:
+  differential_gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LUA: luajit-2.1.0-beta3
+      LUAROCKS: 3.13.0
+      OVERRIDE_LABEL: differential-divergence-ok
+      # A fixed seed, unlike the nightly soak. This is a required check, so it
+      # has to be deterministic: the same pull request must not go red or
+      # green depending on which inputs the night drew. Breadth is the soak's
+      # job.
+      LIBDEFLATEGUARD_FUZZ_SEED: "1234"
+      LIBDEFLATEGUARD_FUZZ_ITERATIONS: "25"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The gate needs the release tags, and it needs the merge base to
+          # work out whether this pull request touches the decode path.
+          # actions/checkout defaults to a shallow single-branch fetch that
+          # has neither.
+          fetch-depth: 0
+
+      - name: Decide whether this is a decode-path change
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+            echo "no pull request context, running the gate unconditionally"
+            echo "relevant=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          merge_base="$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")"
+          changed="$(git diff --name-only "${merge_base}" "${HEAD_SHA}")"
+          echo "files changed against ${merge_base}:"
+          echo "${changed}"
+
+          # The module is the thing under comparison; the suite is the
+          # comparison itself. A change to either can move the answer.
+          #
+          # Matched line by line rather than through a pipe into grep -q,
+          # because grep -q closes the pipe on the first hit and pipefail then
+          # turns the producer's SIGPIPE into a failed step.
+          relevant=false
+          while IFS= read -r file; do
+            case "${file}" in
+              'LibDeflateGuard.lua' | 'tests/FuzzTest.lua') relevant=true ;;
+            esac
+          done <<< "${changed}"
+
+          echo "decode-path change: ${relevant}"
+          echo "relevant=${relevant}" >> "${GITHUB_OUTPUT}"
+
+      - name: Not a decode-path change, skipped
+        if: steps.scope.outputs.relevant != 'true'
+        run: |
+          set -euo pipefail
+          message="This pull request touches neither LibDeflateGuard.lua nor tests/FuzzTest.lua, so there is nothing for the differential gate to compare. Skipped."
+          echo "${message}"
+          {
+            echo "## Differential gate"
+            echo
+            echo "${message}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Resolve the latest release tag
+        if: steps.scope.outputs.relevant == 'true'
+        id: reference
+        run: |
+          set -euo pipefail
+
+          # Version-sorted rather than date-sorted, so a tag pushed out of
+          # order cannot silently become "latest". Only v* tags count: the
+          # repository also carries upstream-style "1.0.2-release" tags that
+          # are not releases of this fork.
+          #
+          # Taken with a parameter expansion rather than a pipe into head,
+          # which would close the pipe under git and trip pipefail.
+          tags="$(git tag --list 'v*' --sort=-v:refname)"
+          tag="${tags%%$'\n'*}"
+          if [ -z "${tag}" ]; then
+            echo "no v* release tag is reachable, so the differential gate has nothing to compare against." >&2
+            echo "This usually means the checkout did not fetch tags. actions/checkout needs fetch-depth: 0." >&2
+            exit 1
+          fi
+          echo "latest release tag: ${tag} ($(git rev-parse "${tag}^{commit}"))"
+
+          git worktree add --detach "${RUNNER_TEMP}/reference" "${tag}"
+          reference="${RUNNER_TEMP}/reference/LibDeflateGuard.lua"
+          if [ ! -e "${reference}" ]; then
+            echo "${tag} has no LibDeflateGuard.lua at the repository root" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "reference=${reference}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Lua and Luarocks
+        if: steps.scope.outputs.relevant == 'true'
+        run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
+
+      - name: Compare every decode entry point against the latest release
+        if: steps.scope.outputs.relevant == 'true'
+        env:
+          TAG: ${{ steps.reference.outputs.tag }}
+          LIBDEFLATEGUARD_FUZZ_REFERENCE: ${{ steps.reference.outputs.reference }}
+          # contains() over the label array. On a labeled/unlabeled event the
+          # payload carries the labels as they are after the change, so this
+          # reflects the current state.
+          OVERRIDE_PRESENT: ${{ contains(github.event.pull_request.labels.*.name, 'differential-divergence-ok') }}
+        run: |
+          set -euo pipefail
+          source .github/workflows/script/setenv_lua.sh
+          lua -v
+
+          log="${RUNNER_TEMP}/differential.log"
+          echo "comparing against ${TAG} at ${LIBDEFLATEGUARD_FUZZ_REFERENCE}"
+          set +e
+          lua tests/FuzzTest.lua 2>&1 | tee "${log}"
+          status="${PIPESTATUS[0]}"
+          set -e
+
+          if [ "${status}" -eq 0 ]; then
+            {
+              echo "## Differential gate"
+              echo
+              echo "No divergence against \`${TAG}\`."
+              echo
+              echo "| Setting | Value |"
+              echo "| --- | --- |"
+              echo "| Reference tag | \`${TAG}\` |"
+              echo "| Seed | \`${LIBDEFLATEGUARD_FUZZ_SEED}\` |"
+              echo "| Iterations | \`${LIBDEFLATEGUARD_FUZZ_ITERATIONS}\` |"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          # grep exits 1 when a run happened to produce no "not ok" line, and
+          # this script must not die on that.
+          divergences="$(grep '^not ok' "${log}" || true)"
+
+          {
+            echo "## Differential gate"
+            echo
+            echo "**Divergence against \`${TAG}\`.**"
+            echo
+            echo "A public decode entry point returned a different tuple to"
+            echo "the released module for the same call."
+            echo
+            echo '```'
+            echo "${divergences}"
+            echo '```'
+            echo
+            echo "Replay locally:"
+            echo
+            echo '```sh'
+            echo "git worktree add ../libdeflateguard-${TAG} ${TAG}"
+            echo "LIBDEFLATEGUARD_FUZZ_REFERENCE=../libdeflateguard-${TAG}/LibDeflateGuard.lua \\"
+            echo "  LIBDEFLATEGUARD_FUZZ_SEED=${LIBDEFLATEGUARD_FUZZ_SEED} \\"
+            echo "  LIBDEFLATEGUARD_FUZZ_ITERATIONS=${LIBDEFLATEGUARD_FUZZ_ITERATIONS} \\"
+            echo "  lua tests/FuzzTest.lua"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${OVERRIDE_PRESENT}" = "true" ]; then
+            echo "::warning title=Differential divergence accepted::The ${OVERRIDE_LABEL} label is applied, so this divergence does not block the merge. It is still a divergence. Confirm every line below is intended."
+            echo "=============================================================="
+            echo "DIVERGENCE AGAINST ${TAG}, OVERRIDDEN BY THE ${OVERRIDE_LABEL} LABEL"
+            echo "=============================================================="
+            echo "${divergences}"
+            echo "=============================================================="
+            {
+              echo
+              echo "Not blocking: the \`${OVERRIDE_LABEL}\` label is applied."
+              echo "A maintainer has declared this divergence intentional."
+              echo "Remove the label to make the gate block again."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          echo "::error title=Differential divergence::A public decode entry point diverged from ${TAG}. If the change is intentional, a maintainer can apply the ${OVERRIDE_LABEL} label to this pull request, which re-runs this gate and lets it pass."
+          {
+            echo
+            echo "Blocking. If this divergence is intentional, a maintainer"
+            echo "can apply the \`${OVERRIDE_LABEL}\` label, which re-runs"
+            echo "this gate and lets it pass."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 1
