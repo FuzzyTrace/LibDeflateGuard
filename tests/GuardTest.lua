@@ -372,6 +372,58 @@ Test("codec decoders cap their input", function()
               Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "custom codec cap")
 end)
 
+-- Regression for the v1.1.0/v1.1.1 nesting break. codec:Encode forwarded
+-- string.gsub's substitution count as a second return value, and the codec
+-- decoders had just gained an optional input cap as their last argument, so
+-- decoding an encode result inline passed the count as the cap.
+--
+-- Every call in this suite, in FuzzTest, and in examples/example.lua stores
+-- the encode result in a local first, which truncates to one value and hides
+-- the fault. These assertions must therefore stay in the nested form, and
+-- must cover both failure modes: a payload with nothing to escape yields
+-- count 0, which was rejected as an invalid cap rather than an oversized
+-- input.
+Test("encoders return exactly one value and nest inside their decoders",
+     function()
+  local codecs = {
+    {"addon", "EncodeForWoWAddonChannel", "DecodeForWoWAddonChannel", "\000"},
+    {"chat", "EncodeForWoWChatChannel", "DecodeForWoWChatChannel", "s"}
+  }
+  for _, entry in ipairs(codecs) do
+    local name, Encode, Decode, escapable = entry[1], entry[2], entry[3],
+                                            entry[4]
+
+    -- Nothing to escape: substitution count 0, which failed as
+    -- invalid_argument because a cap below 1 is not a valid cap.
+    local plain = "abcdef"
+    AssertEqual(Guard[Decode](Guard, Guard[Encode](Guard, plain)), plain,
+                name .. " nested round trip, nothing escaped")
+
+    -- Something to escape: substitution count above 0, which failed as
+    -- input_limit_exceeded because an encoding is always longer than its
+    -- own substitution count.
+    local escaped = string.rep(escapable .. "x", 40)
+    AssertEqual(Guard[Decode](Guard, Guard[Encode](Guard, escaped)), escaped,
+                name .. " nested round trip, bytes escaped")
+
+    AssertEqual(select("#", Guard[Encode](Guard, escaped)), 1,
+                name .. " encoder arity")
+  end
+
+  local codec = assert(Guard:CreateCodec("\000", "\001", ""))
+  AssertEqual(codec:Decode(codec:Encode("abcdef")), "abcdef",
+              "custom codec nested round trip, nothing escaped")
+  AssertEqual(codec:Decode(codec:Encode("a\000b\000c")), "a\000b\000c",
+              "custom codec nested round trip, bytes escaped")
+  AssertEqual(select("#", codec:Encode("a\000b")), 1, "custom codec arity")
+
+  -- The cap is still reachable as a real argument. Losing the count must not
+  -- mean losing the parameter.
+  AssertEqual(select(2, codec:Decode(codec:Encode("a\000b"), 1)),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+              "explicit cap still applies through a nested encode")
+end)
+
 -- Adversarial vectors. FuzzTest mutates valid members, which finds parser
 -- bugs but never produces these shapes: both are well-formed RFC 1951 and
 -- are built to maximise output-per-input and table-builds-per-input.

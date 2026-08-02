@@ -2578,6 +2578,8 @@ function TestCommandLine:TestHelp()
                 "  --dict <filename> specify the file that contains" ..
                 " the entire preset dictionary.\n" ..
                 "  -h    give this help.\n" ..
+                "  --limits <none/addon/generous> apply a decode budget." ..
+                " Default is none.\n" ..
                 "  --strategy <fixed/huffman_only/dynamic>" ..
                 " specify a special compression strategy.\n" ..
                 "  -v    print the version and copyright info.\n" ..
@@ -2654,6 +2656,59 @@ function TestCommandLine:TestErrors()
   lu.assertNotEquals(returned_status, 0)
   lu.assertEquals(stdout, "")
   lu.assertStrContains(stderr, "LibDeflateGuard: Decompress fails.")
+end
+
+-- Regression for the v1.1.0/v1.1.1 command-line break. The CLI decompressed
+-- with whatever the shipping default policy happened to be, so once that
+-- became the addon preset the tool could compress a file it could no longer
+-- decompress. Every other command-line case here uses a 738-byte fixture,
+-- which is far below every budget, so none of them could see it.
+--
+-- The binding cap is max_output_bytes, not the input cap: a member well
+-- inside the 64 KiB input cap still decodes to more than 512 KiB.
+function TestCommandLine:TestDecompressIsNotBoundedByAddonBudget()
+  -- Sized above the generous preset's 8 MiB output cap, so this cannot
+  -- silently degrade into a test that one bigger fixed preset happens to
+  -- cover. Level 1 keeps the fixture cheap; the payload is repetitive enough
+  -- that the member stays far inside the addon input cap regardless.
+  local plain = ("The quick brown fox jumps over the lazy dog. "):rep(200000)
+  local plain_filename = "tests/test_commandline_big.tmp"
+  local member_filename = "tests/test_commandline_big_member.tmp"
+  local output_filename = "tests/test_commandline.tmp"
+  WriteToFile(plain_filename, plain)
+
+  local returned_status, stdout, stderr =
+    RunCommandline(("-1 %s %s"):format(plain_filename, member_filename))
+  lu.assertEquals(returned_status, 0)
+  lu.assertEquals(stdout, "")
+  local member = GetFileData(member_filename)
+  lu.assertTrue(#member < LibDeflate.LIMIT_PRESETS.addon.max_input_bytes)
+  lu.assertTrue(#plain > LibDeflate.LIMIT_PRESETS.addon.max_output_bytes)
+  lu.assertTrue(#plain > LibDeflate.LIMIT_PRESETS.generous.max_output_bytes)
+
+  -- The tool must round trip what it just produced.
+  returned_status, stdout, stderr = RunCommandline(
+                                      ("-d %s %s"):format(member_filename,
+                                                          output_filename))
+  lu.assertEquals(returned_status, 0)
+  lu.assertEquals(stdout, "")
+  lu.assertStrContains(stderr, ("Successfully writes %d bytes"):format(#plain))
+  lu.assertEquals(GetFileData(output_filename), plain)
+
+  -- "--limits" opts back in, and a rejection now says why.
+  returned_status, stdout, stderr = RunCommandline(
+                                      ("-d --limits addon %s %s"):format(
+                                        member_filename, output_filename))
+  lu.assertNotEquals(returned_status, 0)
+  lu.assertEquals(stdout, "")
+  lu.assertStrContains(stderr, "LibDeflateGuard: Decompress fails. Reason: " ..
+                         LibDeflate.ERRORS.OUTPUT_LIMIT_EXCEEDED)
+
+  returned_status, stdout, stderr = RunCommandline(
+                                      ("-d --limits bogus %s %s"):format(
+                                        member_filename, output_filename))
+  lu.assertNotEquals(returned_status, 0)
+  lu.assertStrContains(stderr, "LibDeflateGuard: --limits must be one of")
 end
 
 function TestCommandLine:TestCompressAndDecompress()
