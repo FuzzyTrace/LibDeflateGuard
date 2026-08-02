@@ -14,6 +14,52 @@ All CI running as Github workflow should be passing.
 
 See comments in the config files in [.github/workflows](.github/workflows) for detail.
 
+### The differential gate
+
+A pull request that touches `LibDeflateGuard.lua` or `tests/FuzzTest.lua` is
+compared, call for call, against the latest release tag: every public decode
+entry point must return an identical tuple for the same input. A divergence
+fails `differential_gate` and blocks the merge.
+
+Some divergences are intended. v1.1.2 changed the codec encoder arity on
+purpose, and against v1.1.1 that shows up as a divergence. When the change is
+deliberate, a maintainer applies the `differential-divergence-ok` label to the
+pull request. The gate re-runs, still prints the divergence in the log and in
+the job summary, and passes. Removing the label makes it block again.
+
+Reproduce the comparison locally:
+
+```sh
+git worktree add ../libdeflateguard-reference v1.1.2
+LIBDEFLATEGUARD_FUZZ_REFERENCE=../libdeflateguard-reference/LibDeflateGuard.lua \
+  LIBDEFLATEGUARD_FUZZ_SEED=1234 \
+  LIBDEFLATEGUARD_FUZZ_ITERATIONS=25 \
+  lua tests/FuzzTest.lua
+```
+
+### The nightly soak
+
+`fuzz_soak` runs `tests/FuzzTest.lua` every night with a raised iteration count
+and a fresh seed. The seed is printed in the log and in the job summary, on
+success and on failure. To reproduce a failing night, re-run the workflow by
+hand through `workflow_dispatch` with that seed, or run it locally:
+
+```sh
+LIBDEFLATEGUARD_FUZZ_SEED=<seed from the failing run> \
+  LIBDEFLATEGUARD_FUZZ_ITERATIONS=<iterations from the failing run> \
+  lua tests/FuzzTest.lua
+```
+
+### Version numbers
+
+Four version sites are hand-edited and must be changed together: the
+`LibDeflateGuard.lua` header banner on line 2, `_VERSION`, `_COPYRIGHT`, and
+the `version` and `tag` fields of
+`rockspecs/libdeflateguard-<version>-1.rockspec`. `version_check` asserts they
+agree on every push and pull request, and on a tag push that they also agree
+with the tag. Run `tools/check_version_consistency.sh` before pushing a
+release.
+
 ## Testing
 
 Test code for your features are required. 100% Code coverage is recommended.
