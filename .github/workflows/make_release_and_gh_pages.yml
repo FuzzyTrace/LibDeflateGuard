@@ -24,7 +24,7 @@ jobs:
       LUA: lua-5.1.5
       LUAROCKS: 3.7.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Lua and Luarocks
         run: sudo env "LUA=${LUA}" "LUAROCKS=${LUAROCKS}" .github/workflows/script/install_lua_luarocks.sh
@@ -52,7 +52,7 @@ jobs:
           zip -9 -v -r ../docs.zip .
 
       - name: Upload generated docs as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docs
           path: docs.zip
@@ -63,7 +63,7 @@ jobs:
           cp .release/*.zip ./
 
       - name: Upload package as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: embed_source
           path: libdeflateguard-*.zip
