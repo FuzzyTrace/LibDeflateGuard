@@ -424,6 +424,328 @@ Test("encoders return exactly one value and nest inside their decoders",
               "explicit cap still applies through a nested encode")
 end)
 
+Test("compression input cap refuses over-budget input", function()
+  local payload = string.rep("compressible payload ", 40)
+  local dictionary_string = "the quick brown fox jumps over the lazy dog"
+  local dictionary = Guard:CreateDictionary(dictionary_string,
+                                            #dictionary_string,
+                                            Guard:Adler32(dictionary_string))
+
+  -- Every entry point, with and without a dictionary. The third field is the
+  -- extra argument each one takes before "configs".
+  local entries = {
+    {"CompressDeflate"}, {"CompressZlib"},
+    {"CompressDeflateWithDict", dictionary},
+    {"CompressZlibWithDict", dictionary}
+  }
+  for _, entry in ipairs(entries) do
+    local name, dict = entry[1], entry[2]
+    local function Compress(configs)
+      if dict then return Guard[name](Guard, payload, dict, configs) end
+      return Guard[name](Guard, payload, configs)
+    end
+
+    -- No cap at all is the pre-1.2 behaviour and must be untouched.
+    local uncapped, padding = Compress(nil)
+    assert(type(uncapped) == "string", name .. " must compress without a cap")
+    AssertEqual(type(padding), "number", name .. " uncapped second return")
+
+    -- Exactly at the cap is admitted.
+    local exact = Compress({max_input_bytes = #payload})
+    AssertEqual(exact, uncapped, name .. " at the cap must compress")
+
+    -- One byte under is refused, with the same shape the decode path uses.
+    local refused, code = Compress({max_input_bytes = #payload - 1})
+    AssertEqual(refused, nil, name .. " over the cap output")
+    AssertEqual(code, Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+                name .. " over the cap error")
+
+    -- Arity is two on both paths, so no caller's argument list changes shape.
+    AssertEqual(select("#", Compress({max_input_bytes = #payload})), 2,
+                name .. " success arity")
+    AssertEqual(select("#", Compress({max_input_bytes = 1})), 2,
+                name .. " failure arity")
+
+    -- The cap coexists with the pre-existing keys.
+    local with_level = Compress({level = 9, max_input_bytes = #payload})
+    assert(type(with_level) == "string", name .. " cap alongside level")
+    AssertEqual(select(2, Compress({
+      level = 9,
+      strategy = "fixed",
+      max_input_bytes = 1
+    })), Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+                name .. " cap alongside level and strategy")
+
+    -- A malformed cap is a programmer error, so it raises, exactly as every
+    -- other malformed compression argument does. It must NOT return a code:
+    -- silently compressing, or silently refusing, on a typo'd cap is how a
+    -- budget stops being a budget.
+    for _, bad in ipairs({0, -1, 1.5, math.huge, "64", true, 0 / 0}) do
+      local ok, message = pcall(Compress, {max_input_bytes = bad})
+      assert(not ok,
+             name .. " must raise on cap " .. tostring(bad) .. ", returned " ..
+               tostring(message))
+      assert(tostring(message):find("max_input_bytes", 1, true), name ..
+               " raise must name the offending key, got " .. tostring(message))
+    end
+
+    -- An unknown key still raises. Adding one key must not open the table.
+    assert(not pcall(Compress, {max_output_bytes = 10}),
+           name .. " must still raise on an unknown configs key")
+  end
+end)
+
+-- Nesting. The v1.1.2 regression survived every test in this repository
+-- because each of them stored an encode result in a local first, which
+-- truncates multiple returns. A compressor has always returned two values,
+-- and now returns two on the failure path as well, so these assertions are
+-- written in the shape a caller actually types.
+Test("Decompress(Compress(x)) nesting is safe on both compress paths",
+     function()
+  local payload = string.rep("nested round trip ", 30)
+
+  -- Unbound: the compressor's padding_bitlen lands in the decompressor's
+  -- "limits" slot. It is not a policy, so this is refused rather than decoded
+  -- under some accidental budget. Nothing here may be a success.
+  local output, code = Guard:DecompressDeflate(Guard:CompressDeflate(payload))
+  AssertEqual(output, nil, "nested unbound deflate output")
+  AssertEqual(code, Guard.ERRORS.INVALID_ARGUMENT, "nested unbound deflate code")
+  output, code = Guard:DecompressZlib(Guard:CompressZlib(payload))
+  AssertEqual(output, nil, "nested unbound zlib output")
+  AssertEqual(code, Guard.ERRORS.INVALID_ARGUMENT, "nested unbound zlib code")
+
+  -- The new failure arity, nested. Compress answers (nil, "input_limit
+  -- _exceeded"), so the decompressor is handed a nil string and a string
+  -- policy. It must still answer with a stable code and never throw.
+  output, code = Guard:DecompressDeflate(
+                   Guard:CompressDeflate(payload, {max_input_bytes = 1}))
+  AssertEqual(output, nil, "nested refused compress output")
+  AssertEqual(code, Guard.ERRORS.INVALID_ARGUMENT,
+              "nested refused compress code")
+
+  -- Bound: the instance is the policy, so the extra value is ignored and the
+  -- nested form is the one that works. This is the shape the API now
+  -- recommends.
+  local guard = assert(Guard.WithPolicy(Guard.LIMIT_PRESETS.generous))
+  AssertEqual(guard:DecompressDeflate(guard:CompressDeflate(payload)), payload,
+              "nested bound deflate round trip")
+  AssertEqual(guard:DecompressZlib(guard:CompressZlib(payload)), payload,
+              "nested bound zlib round trip")
+  AssertEqual(
+    select(2, guard:DecompressDeflate(guard:CompressDeflate(payload))), 0,
+    "nested bound status")
+
+  local dictionary_string = "the quick brown fox jumps over the lazy dog"
+  local dictionary = Guard:CreateDictionary(dictionary_string,
+                                            #dictionary_string,
+                                            Guard:Adler32(dictionary_string))
+  AssertEqual(guard:DecompressDeflateWithDict(
+                guard:CompressDeflateWithDict(payload, dictionary), dictionary),
+              payload, "nested bound deflate dictionary round trip")
+  AssertEqual(guard:DecompressZlibWithDict(
+                guard:CompressZlibWithDict(payload, dictionary), dictionary),
+              payload, "nested bound zlib dictionary round trip")
+
+  -- A bound compress that its own cap refuses feeds nil to a bound decode.
+  local tight = assert(Guard.WithPolicy({max_input_bytes = 8}))
+  output, code = tight:DecompressDeflate(tight:CompressDeflate(payload))
+  AssertEqual(output, nil, "nested bound refused output")
+  AssertEqual(code, Guard.ERRORS.INVALID_ARGUMENT, "nested bound refused code")
+
+  -- The whole pipeline, nested end to end, which is what an addon writes.
+  AssertEqual(guard:DecompressDeflate(guard:DecodeForPrint(
+                                        guard:EncodeForPrint(
+                                          guard:CompressDeflate(payload)))),
+              payload, "nested bound print pipeline")
+  AssertEqual(guard:DecompressDeflate(guard:DecodeForWoWAddonChannel(
+                                        guard:EncodeForWoWAddonChannel(
+                                          guard:CompressDeflate(payload)))),
+              payload, "nested bound addon channel pipeline")
+  AssertEqual(guard:DecompressDeflate(guard:DecodeForWoWChatChannel(
+                                        guard:EncodeForWoWChatChannel(
+                                          guard:CompressDeflate(payload)))),
+              payload, "nested bound chat channel pipeline")
+end)
+
+Test("a policy instance derives every cap from max_input_bytes", function()
+  local generous = assert(Guard.WithPolicy(Guard.LIMIT_PRESETS.generous))
+  local derived = generous:GetCodecLimits()
+  local base = Guard.LIMIT_PRESETS.generous.max_input_bytes
+  AssertEqual(derived.print_max_input_bytes, math.floor(base * 4 / 3),
+              "print cap derivation")
+  AssertEqual(derived.channel_max_input_bytes, base, "channel cap derivation")
+  AssertEqual(derived.compress_max_input_bytes, base, "compress cap derivation")
+  for key, value in pairs(Guard.LIMIT_PRESETS.generous) do
+    AssertEqual(generous:GetPolicy()[key], value, "policy passthrough: " .. key)
+  end
+
+  -- A default instance must derive exactly the numbers the module publishes
+  -- as its load-time defaults, which is the coupling this removes.
+  local default_instance = assert(Guard.WithPolicy())
+  AssertEqual(default_instance:GetCodecLimits().print_max_input_bytes,
+              Guard.DEFAULT_CODEC_LIMITS.print_max_input_bytes,
+              "default print cap")
+  AssertEqual(default_instance:GetCodecLimits().channel_max_input_bytes,
+              Guard.DEFAULT_CODEC_LIMITS.channel_max_input_bytes,
+              "default channel cap")
+
+  -- Behaviour, not just arithmetic. A small policy so the strings stay small.
+  local small = assert(Guard.WithPolicy({max_input_bytes = 300}))
+  local caps = small:GetCodecLimits()
+  AssertEqual(caps.print_max_input_bytes, 400, "small print cap")
+  AssertEqual(caps.channel_max_input_bytes, 300, "small channel cap")
+
+  AssertEqual(select(2, small:DecodeForPrint(string.rep("a", 401))),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "print cap fires at 401")
+  assert(small:DecodeForPrint(string.rep("a", 400)) ~= nil,
+         "print cap must admit exactly 400")
+  -- The unbound entry point still uses the load-time default, so 401 bytes
+  -- proves the instance cap is the thing being applied.
+  assert(Guard:DecodeForPrint(string.rep("a", 401)) ~= nil,
+         "the unbound print decoder must be unaffected by an instance")
+
+  for _, method in ipairs({
+    "DecodeForWoWAddonChannel", "DecodeForWoWChatChannel"
+  }) do
+    AssertEqual(select(2, small[method](small, string.rep("x", 301))),
+                Guard.ERRORS.INPUT_LIMIT_EXCEEDED, method .. " cap fires at 301")
+    AssertEqual(small[method](small, string.rep("x", 300)),
+                string.rep("x", 300), method .. " admits exactly 300")
+    assert(Guard[method](Guard, string.rep("x", 301)) ~= nil,
+           "the unbound " .. method .. " must be unaffected by an instance")
+  end
+
+  -- Compression, same derivation.
+  AssertEqual(select(2, small:CompressDeflate(string.rep("y", 301))),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "compress cap fires at 301")
+  assert(small:CompressDeflate(string.rep("y", 300)) ~= nil,
+         "compress cap must admit exactly 300")
+  -- An explicit configs cap is the more specific statement and wins.
+  AssertEqual(select(2, small:CompressDeflate(string.rep("y", 200),
+                                              {max_input_bytes = 100})),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "explicit configs cap is used")
+  assert(
+    small:CompressDeflate(string.rep("y", 400), {max_input_bytes = 500}) ~= nil,
+    "an explicit configs cap can widen the instance cap")
+  -- Merging the derived cap must not write into the caller's table.
+  local configs = {level = 9}
+  small:CompressDeflate("payload", configs)
+  AssertEqual(configs.max_input_bytes, nil,
+              "the instance must not write a cap into the caller's configs")
+  AssertEqual(next(configs), "level", "the caller's configs must be untouched")
+
+  -- A codec built by the instance inherits the instance's channel cap.
+  local codec = assert(small:CreateCodec("\000", "\001", ""))
+  AssertEqual(select(2, codec:Decode(string.rep("z", 301))),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "instance codec cap")
+  AssertEqual(codec:Decode(codec:Encode("a\000b")), "a\000b",
+              "instance codec nested round trip")
+  local module_codec = assert(Guard:CreateCodec("\000", "\001", ""))
+  assert(module_codec:Decode(string.rep("z", 301)) ~= nil,
+         "a module codec must keep the load-time default cap")
+
+  -- And the point of the whole thing: a raised policy actually decodes a
+  -- member the default policy refuses, without a second cap being set.
+  local big = {}
+  local state = 1
+  for i = 1, 200000 do
+    -- MINSTD, so the bytes do not compress. A simple i * 7 % 256 ramp has a
+    -- 256-byte period and deflates to almost nothing.
+    state = state * 16807 % 2147483647
+    big[i] = string.char(state % 256)
+  end
+  big = table.concat(big)
+  local member = Guard:CompressDeflate(big)
+  assert(#member > Guard.DEFAULT_LIMITS.max_input_bytes,
+         "the member must exceed the default input cap to be a real test")
+  AssertEqual(select(2, Guard:DecompressDeflate(member)),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "default policy refuses")
+  AssertEqual(generous:DecompressDeflate(member), big,
+              "the generous instance decodes it")
+end)
+
+Test("a policy instance cannot be weakened after it is built", function()
+  local policy = {max_input_bytes = 300}
+  local guard = assert(Guard.WithPolicy(policy))
+
+  -- Mutating the table the caller handed in must not move the budget.
+  policy.max_input_bytes = 1024 * 1024
+  policy.max_output_bytes = 1024 * 1024
+  AssertEqual(guard:GetPolicy().max_input_bytes, 300, "policy table capture")
+  AssertEqual(guard:GetCodecLimits().channel_max_input_bytes, 300,
+              "derived cap capture")
+  AssertEqual(select(2, guard:DecodeForWoWAddonChannel(string.rep("x", 301))),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "enforced cap after mutation")
+  AssertEqual(select(2, guard:CompressDeflate(string.rep("y", 301))),
+              Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+              "enforced compress cap after mutation")
+
+  -- The accessors hand back copies, so writing to what they return is inert.
+  local seen = guard:GetPolicy()
+  seen.max_input_bytes = 1024 * 1024
+  AssertEqual(guard:GetPolicy().max_input_bytes, 300, "GetPolicy returns a copy")
+  local seen_caps = guard:GetCodecLimits()
+  seen_caps.channel_max_input_bytes = 1024 * 1024
+  AssertEqual(guard:GetCodecLimits().channel_max_input_bytes, 300,
+              "GetCodecLimits returns a copy")
+
+  -- Building from a preset must copy it, and must not alias the module's
+  -- private defaults either.
+  local restore = Guard.LIMIT_PRESETS.addon.max_input_bytes
+  local from_preset = assert(Guard.WithPolicy(Guard.LIMIT_PRESETS.addon))
+  Guard.LIMIT_PRESETS.addon.max_input_bytes = 1
+  AssertEqual(from_preset:GetPolicy().max_input_bytes, restore,
+              "preset table capture")
+  Guard.LIMIT_PRESETS.addon.max_input_bytes = restore
+
+  local from_default = assert(Guard.WithPolicy())
+  from_default:GetPolicy().max_input_bytes = 1
+  AssertEqual(Guard:DecompressDeflate(FromHex("330400")), "1",
+              "an instance must not alias the module defaults")
+  AssertEqual(from_default:GetPolicy().max_input_bytes,
+              Guard.DEFAULT_LIMITS.max_input_bytes, "default instance policy")
+end)
+
+Test("WithPolicy validates a policy exactly as the limits parameter does",
+     function()
+  local bad_policies = {
+    {max_blocks = 0}, {max_blocks = -1}, {max_blocks = 1.5}, {unknown_key = 1},
+    {max_input_bytes = math.huge}, {max_symbols = "10"},
+    {max_output_bytes = 0 / 0}, {max_work_units = -0.5}, "not a table", 42, true
+  }
+  local fixed = FromHex("330400")
+  for index, policy in ipairs(bad_policies) do
+    -- The same answer the decompressors give for the same policy, so there is
+    -- one validator and not two.
+    AssertEqual(select(2, Guard:DecompressDeflate(fixed, policy)),
+                Guard.ERRORS.INVALID_ARGUMENT, "reference rejection " .. index)
+    local instance, code = Guard.WithPolicy(policy)
+    AssertEqual(instance, nil, "rejected policy instance " .. index)
+    AssertEqual(code, Guard.ERRORS.INVALID_ARGUMENT,
+                "rejected policy code " .. index)
+  end
+
+  -- Every shape the limits parameter accepts must build an instance.
+  for _, policy in ipairs({
+    {}, {max_blocks = 1}, Guard.LIMIT_PRESETS.addon,
+    Guard.LIMIT_PRESETS.generous, Guard.DEFAULT_LIMITS
+  }) do
+    local instance = assert(Guard.WithPolicy(policy),
+                            "a valid policy must build an instance")
+    AssertEqual(instance:DecompressDeflate(fixed), "1",
+                "a built instance must decode")
+  end
+
+  -- Documented as a dot call. The rest of the module is colon-called, so the
+  -- colon spelling must not silently resolve the module table as a policy.
+  local dotted = assert(Guard.WithPolicy(Guard.LIMIT_PRESETS.generous))
+  local coloned = assert(Guard:WithPolicy(Guard.LIMIT_PRESETS.generous))
+  AssertEqual(coloned:GetPolicy().max_input_bytes,
+              dotted:GetPolicy().max_input_bytes, "colon call spelling")
+  AssertEqual(assert(Guard:WithPolicy()):GetPolicy().max_input_bytes,
+              Guard.DEFAULT_LIMITS.max_input_bytes, "colon call with no policy")
+end)
+
 -- Adversarial vectors. FuzzTest mutates valid members, which finds parser
 -- bugs but never produces these shapes: both are well-formed RFC 1951 and
 -- are built to maximise output-per-input and table-builds-per-input.

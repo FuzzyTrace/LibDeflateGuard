@@ -784,6 +784,167 @@ Test("dictionary decoding round trips and refuses mismatches", function()
   end
 end)
 
+-- The bound policy instance and the compression input cap are surface that a
+-- released reference module does not have, so nothing below is compared
+-- against it. What is checked instead is that a bound call agrees, tuple for
+-- tuple, with the unbound call it is supposed to stand for.
+Test("a bound policy instance agrees with the unbound call it replaces",
+     function()
+  for iteration = 1, Scaled(60) do
+    local payload = RandomPayload(iteration)
+    local policy = {
+      -- Two scales deliberately. A cap drawn uniformly from a wide range is
+      -- almost never smaller than the payloads this suite generates, and a
+      -- derived cap that silently fell back to the load-time default would
+      -- then agree with the explicit call by luck on nearly every draw.
+      max_input_bytes = RandomBetween(1, iteration % 2 == 0 and 200000 or 4000),
+      max_output_bytes = RandomBetween(1, 200000),
+      max_blocks = RandomBetween(1, 64),
+      max_symbols = RandomBetween(1, 400000),
+      max_work_units = RandomBetween(1, 800000)
+    }
+    local guard = assert(Guard.WithPolicy(policy),
+                         "a well-formed policy must build an instance")
+
+    for key, value in pairs(policy) do
+      assert(guard:GetPolicy()[key] == value,
+             "instance policy must match " .. key)
+    end
+    local caps = guard:GetCodecLimits()
+    assert(caps.print_max_input_bytes ==
+             math.floor(policy.max_input_bytes * 4 / 3),
+           "print cap must be 4/3 of max_input_bytes")
+    assert(caps.channel_max_input_bytes == policy.max_input_bytes,
+           "channel cap must be max_input_bytes")
+    assert(caps.compress_max_input_bytes == policy.max_input_bytes,
+           "compress cap must be max_input_bytes")
+
+    local member = Guard:CompressDeflate(payload)
+    local wrapped = Guard:CompressZlib(payload)
+    local decompressors = {
+      {"DecompressDeflate", member}, {"DecompressZlib", wrapped}
+    }
+    for _, entry in ipairs(decompressors) do
+      local method, target = entry[1], entry[2]
+      local bound = Pack(guard[method](guard, target))
+      local unbound = Pack(Guard[method](Guard, target, policy))
+      AssertDecodeContract(bound[1], bound[2], "bound " .. method, true)
+      assert(bound.n == unbound.n and bound[1] == unbound[1] and bound[2] ==
+               unbound[2],
+             "bound " .. method .. " must answer exactly as the unbound call")
+    end
+
+    local codecs = {
+      {
+        "DecodeForPrint", Guard:EncodeForPrint(payload),
+        caps.print_max_input_bytes
+      }, {
+        "DecodeForWoWAddonChannel", Guard:EncodeForWoWAddonChannel(payload),
+        caps.channel_max_input_bytes
+      }, {
+        "DecodeForWoWChatChannel", Guard:EncodeForWoWChatChannel(payload),
+        caps.channel_max_input_bytes
+      }
+    }
+    for _, entry in ipairs(codecs) do
+      local method, encoded, cap = entry[1], entry[2], entry[3]
+      local bound = Pack(guard[method](guard, encoded))
+      local unbound = Pack(Guard[method](Guard, encoded, cap))
+      AssertDecodeContract(bound[1], bound[2], "bound " .. method, false)
+      assert(bound.n == unbound.n and bound[1] == unbound[1] and bound[2] ==
+               unbound[2],
+             "bound " .. method .. " must answer as the explicitly capped call")
+      -- The cap has to be the instance's, not the load-time default.
+      if #encoded > cap then
+        assert(bound[2] == Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+               "bound " .. method .. " must refuse an input over its own cap")
+      end
+    end
+
+    -- Nested, because that is the shape the instance exists to make safe.
+    -- A bound compress refused by its own cap yields nil, and the decoder has
+    -- to answer with a stable code rather than throwing.
+    local round_tripped = Pack(guard:DecompressDeflate(
+                                 guard:CompressDeflate(payload)))
+    AssertDecodeContract(round_tripped[1], round_tripped[2], "bound nesting",
+                         true)
+    if #payload <= policy.max_input_bytes then
+      -- Compression was admitted, so only the decode budget can refuse it.
+      assert(round_tripped[1] ~= nil or round_tripped[2] ~=
+               Guard.ERRORS.INVALID_ARGUMENT,
+             "an admitted payload must not fail as an invalid argument")
+    else
+      assert(round_tripped[2] == Guard.ERRORS.INVALID_ARGUMENT,
+             "a refused compress must reach the decoder as a nil string")
+    end
+  end
+end)
+
+Test("the compression input cap answers on the byte", function()
+  for iteration = 1, Scaled(60) do
+    local payload = RandomPayload(iteration)
+    local dictionary_string = "the quick brown fox jumps over the lazy dog"
+    local dictionary = Guard:CreateDictionary(dictionary_string,
+                                              #dictionary_string,
+                                              Guard:Adler32(dictionary_string))
+    local entries = {
+      {"CompressDeflate"}, {"CompressZlib"},
+      {"CompressDeflateWithDict", dictionary},
+      {"CompressZlibWithDict", dictionary}
+    }
+    for _, entry in ipairs(entries) do
+      local method, dict = entry[1], entry[2]
+      local function Compress(configs)
+        if dict then return Guard[method](Guard, payload, dict, configs) end
+        return Guard[method](Guard, payload, configs)
+      end
+
+      local cap = RandomBetween(1, #payload + 8)
+      local answer = Pack(Compress({max_input_bytes = cap}))
+      assert(answer.n == 2, method .. " must always answer with two values")
+      if #payload > cap then
+        assert(answer[1] == nil, method .. " over its cap must answer nil")
+        assert(answer[2] == Guard.ERRORS.INPUT_LIMIT_EXCEEDED,
+               method .. " over its cap must report input_limit_exceeded")
+      else
+        assert(type(answer[1]) == "string",
+               method .. " within its cap must compress")
+        assert(type(answer[2]) == "number",
+               method .. " within its cap must still answer padding_bitlen")
+        local uncapped = Pack(Compress(nil))
+        assert(answer[1] == uncapped[1] and answer[2] == uncapped[2],
+               method .. " with a satisfied cap must match the uncapped call")
+      end
+
+      -- A malformed cap raises. It must never quietly become "no cap".
+      for _, bad in ipairs({0, -1, 0.5, math.huge, -math.huge, "1", true, {}}) do
+        assert(not pcall(Compress, {max_input_bytes = bad}),
+               method .. " must raise on a malformed cap: " .. tostring(bad))
+      end
+    end
+  end
+end)
+
+Test("WithPolicy refuses a malformed policy without throwing", function()
+  local bad_policies = {
+    {max_blocks = 0}, {max_blocks = -1}, {max_blocks = 1.5}, {unknown_key = 1},
+    {max_input_bytes = math.huge}, {max_symbols = "10"},
+    {max_output_bytes = 0 / 0}, {max_work_units = -0.5}, "not a table", 42,
+    true, print
+  }
+  local sample = Guard:CompressDeflate("hello world hello world")
+  for _, policy in ipairs(bad_policies) do
+    local built = Pack(Guard.WithPolicy(policy))
+    assert(built[1] == nil, "a malformed policy must not build an instance")
+    assert(built[2] == Guard.ERRORS.INVALID_ARGUMENT,
+           "a malformed policy must report invalid_argument")
+    -- Which must be the very same answer the limits parameter gives.
+    local direct = Pack(Guard:DecompressDeflate(sample, policy))
+    assert(direct[2] == built[2],
+           "WithPolicy and the limits parameter must agree on a bad policy")
+  end
+end)
+
 if Reference then
   io.write(("# compared %d calls against %s\n"):format(comparisons,
                                                        reference_path))

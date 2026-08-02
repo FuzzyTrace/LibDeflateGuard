@@ -106,3 +106,30 @@ assert(#compress_zlib_with_dict < #compress_zlib)
 local decompress_zlib_with_dict = LibDeflateGuard:DecompressZlibWithDict(
                                     compress_zlib_with_dict, dict)
 assert(decompress_zlib_with_dict == example_input)
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+--- State the decode budget once, instead of on every call.
+-- The instance derives the codec input caps and the compression input cap
+-- from the policy's max_input_bytes, so they cannot drift apart, and its
+-- methods nest directly because they take no trailing cap argument.
+local guard = assert(LibDeflateGuard.WithPolicy(
+                       LibDeflateGuard.LIMIT_PRESETS.generous))
+
+assert(guard:DecompressDeflate(guard:CompressDeflate(example_input)) ==
+         example_input)
+assert(guard:DecompressDeflate(guard:DecodeForPrint(
+                                 guard:EncodeForPrint(
+                                   guard:CompressDeflate(example_input)))) ==
+         example_input)
+
+-- Compression can refuse an over-budget input rather than stalling on it.
+-- This is the only compression failure that answers with a code instead of
+-- raising: a malformed cap is still a programmer error and still raises.
+local refused, compress_error = LibDeflateGuard:CompressDeflate(
+                                  string.rep("x", 4096),
+                                  {max_input_bytes = 1024})
+assert(refused == nil)
+assert(compress_error == LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED)
