@@ -1,0 +1,38 @@
+# Check that every hand-edited version site agrees
+#
+# A release carries four version sites: the LibDeflateGuard.lua header banner
+# on line 2, _VERSION, _COPYRIGHT, and the version and tag fields of
+# rockspecs/libdeflateguard-<version>-1.rockspec. All four are hand-edited.
+# v1.1.1 was a release whose only source change was those strings, which is
+# the failure mode this catches.
+#
+# On a tag push the sites must also agree with the tag being released.
+
+name: version_check
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+  workflow_dispatch:
+
+jobs:
+  version_check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that every version site agrees
+        run: |
+          set -euo pipefail
+          # On a tag push the version sites must also match the tag itself.
+          # GITHUB_REF_TYPE is "tag" or "branch".
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tools/check_version_consistency.sh "${GITHUB_REF_NAME}"
+          else
+            tools/check_version_consistency.sh
+          fi
