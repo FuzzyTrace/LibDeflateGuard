@@ -53,6 +53,21 @@
 <div id="content">
 
 
+<h3>LibDeflateGuard v1.1.1</h3>
+
+<ul>
+    <li>No functional change. Apart from the version strings, <a href="../source/LibDeflateGuard.lua.html#">LibDeflateGuard.lua</a>
+    is identical to v1.1.0, so there is no reason to upgrade for the library
+    itself.</li>
+    <li>Repository and CI only. The release workflow can publish generated
+    documentation to <code>gh-pages</code> again; its <code>GITHUB_TOKEN</code> had been read-only
+    since the fork was created, so every attempt had failed and the published
+    docs still described the pre-rename <code>LibDeflate.lua</code>. The <code>luaunit</code> install
+    now retries, having flaked on a macOS runner when luarocks.org failed to
+    serve a rockspec. The GitHub Actions used by CI moved to releases running on
+    Node 24, ahead of the Node 20 runtime being retired.</li>
+</ul>
+
 <h3>LibDeflateGuard v1.1.0</h3>
 
 <ul>
