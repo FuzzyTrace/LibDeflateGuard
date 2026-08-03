@@ -9,12 +9,12 @@ artifact. Tick items off here as they land.
 
 ## Status
 
-| #   | Item                                            | State   |
-| --- | ----------------------------------------------- | ------- |
-| A   | CI: fuzz soak, differential gate, version check | done    |
-| B   | Bound policy instance, plus a compressor cap    | pending |
-| C   | Resumable decode (prototype only)               | pending |
-| D   | Huffman decode LUT                              | dropped |
+| #   | Item                                            | State      |
+| --- | ----------------------------------------------- | ---------- |
+| A   | CI: fuzz soak, differential gate, version check | done       |
+| B   | Bound policy instance, plus a compressor cap    | done       |
+| C   | Resumable decode (prototype only)               | prototyped |
+| D   | Huffman decode LUT                              | dropped    |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -42,6 +42,13 @@ single-iteration pass, so the capability exists and is unused.
    surfaces as `custom codec encode: got (<string len=8>, nil), reference (<string len=8>, 0)`, which is correct and expected. Options are to run it
    advisory-only, or to require an explicit acknowledgement in the pull
    request. Decide this before wiring it as a required check.
+
+   **Decided:** the gate blocks, and a maintainer-applied
+   `differential-divergence-ok` label overrides it. The job still finds and
+   prints the divergence under the label; it just stops failing. The workflow
+   triggers on `labeled` and `unlabeled` so applying the label re-runs it.
+   Note that `main` carries no branch protection today, so "blocks" means the
+   check goes red, not that GitHub refuses the merge.
 
 3. **Version consistency check.** A release carries four version sites that
    are currently hand-edited:
@@ -139,6 +146,60 @@ feature. Gates before it becomes real:
 Kill criterion: if this starts pulling the module away from "LibDeflate plus
 budgets", stop. The value of this fork is a small, auditable delta from
 upstream, and that is worth more than any single feature.
+
+### What the prototype found
+
+Built and parked as an open draft pull request. Deliberately not merged: the
+sketch above holds up, but the case for shipping it does not close on its own.
+The kill criterion did not trip.
+
+Against the four gates:
+
+- `GuardTest` and `FuzzTest` green, on every interpreter in the matrix. The
+  differential harness is clean for the one-shot path — 316854 compared calls
+  against v1.1.2, no divergence.
+- The adversarial vectors still charge exactly, with **no expected value
+  changed**. Not one increment moved.
+- The benchmark is **inconclusive rather than flat**, and should be reported
+  that way. Five shapes on `luajit -joff`, medians of 21 alternated rounds,
+  three independent runs: everything lands within ±3–6%, with the sign
+  flipping between runs — the branch reads 6.9% _faster_ on one match-bomb
+  run, which it cannot be. The measurement floor is the result. What holds is
+  that no regression exists above that floor, and that the structure agrees:
+  the hot loop keeps one comparison per charge, because `work_deadline`
+  replaces the hoisted `max_work_units` local rather than adding to it.
+- The delta stayed small: +144/−17 in the module, of which only six lines land
+  in functions upstream LibDeflate also has.
+
+The containment constraint was real and is satisfied. `coroutine.resume`
+carries the resumable path; the one-shot path keeps `pcall`, because it passes
+no slice and so can never reach a yield. `lua_test` runs `GuardTest` on
+`lua-5.1.5`, so the suspend-and-resume test executes on a stock 5.1 where
+yielding across `pcall` is impossible — the constraint is tested, not assumed.
+
+**The finding that decides this item is not in the code.** Resumability alone
+does not deliver the motivating use case. The total budget is unchanged by
+design, so a WeakAuras-sized import still cannot be decoded under the `addon`
+preset. What the prototype buys is that a _raised_ policy no longer has to be
+paid in one frame. Adopting it therefore means also telling callers to raise
+their policy, and that is a second decision this roadmap has not made. Item C
+was justified above as "the structural answer"; it is half of one.
+
+Smaller limits worth carrying forward:
+
+- Yield granularity is bounded below by the coarsest single charge. A stored
+  block charges up to 65535 work units at once and cannot be split.
+- An abandoned step function holds the whole decode state alive.
+- Only raw deflate is surfaced.
+
+One incidental result, unrelated to resumability but found by mutating the
+charge sites: removing only the _check_ at the literal site, leaving the
+increment, fails no test, because the next site catches the overage one symbol
+later. The adversarial vectors pin the charging, not the placement of every
+trip site. That is pre-existing and is not a reason to change them.
+
+Revisit when someone reports the import case for real, or when the question of
+raising the default policy is answered on its own merits.
 
 ## D. Huffman decode LUT — dropped
 
