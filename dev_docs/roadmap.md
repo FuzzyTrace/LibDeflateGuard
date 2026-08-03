@@ -198,8 +198,53 @@ increment, fails no test, because the next site catches the overage one symbol
 later. The adversarial vectors pin the charging, not the placement of every
 trip site. That is pre-existing and is not a reason to change them.
 
-Revisit when someone reports the import case for real, or when the question of
-raising the default policy is answered on its own merits.
+Revisit when someone reports the import case for real. The question of raising
+the default policy is answered below.
+
+### Should the default policy be raised? No
+
+The question the prototype left open, measured rather than argued. Both
+presets on `luajit -joff` as the World of Warcraft interpreter proxy, best of
+five, each saturating its own output cap:
+
+| Preset     | Shape       | Input    | Decoded | Time       | Heap    |
+| ---------- | ----------- | -------- | ------- | ---------- | ------- |
+| `addon`    | match bomb  | 0.7 KB   | 512 KB  | **9 ms**   | 1.8 MB  |
+| `addon`    | import blob | 41.6 KB  | 512 KB  | **14 ms**  | 2.3 MB  |
+| `generous` | match bomb  | 11.3 KB  | 8 MB    | **126 ms** | 14.4 MB |
+| `generous` | import blob | 662.4 KB | 8 MB    | **237 ms** | 22.6 MB |
+
+A frame at 60 fps is 16.7 ms. The `addon` preset's worst case is 14 ms — one
+frame, at the edge but inside it, which is what it was sized for and agrees
+with the "about 10 ms" measured for item D.
+
+Raising the default to `generous` makes the worst case 237 ms, about fourteen
+dropped frames, plus a 22.6 MB spike on a shared Lua heap where addon memory
+is a real budget and the resulting collection is its own hitch. The
+asymmetry is the argument: it helps the few addons doing large imports and
+exposes every addon handling untrusted messages, which is the population this
+fork exists to protect. Note that the 126 ms adversarial case is reached from
+11 KB of attacker-supplied input.
+
+The opt-in is the right shape, and item B already built it. An addon that
+needs a large import writes
+`LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)` and
+accepts the stall knowingly.
+
+**This is also what item C is for.** An import is a user-initiated paste, not
+a frame-thread message, so a few hundred milliseconds behind a progress
+indicator is acceptable there in a way it never is for an incoming chat
+packet. The pairing is a raised policy _plus_ a resumable decode: the policy
+makes the import legal, the slicing makes paying for it not freeze the client.
+Neither delivers the import case alone.
+
+Two limits on the above. The numbers are one machine with `luajit -joff`, and
+the real client interpreter is slower, so 237 ms is a floor rather than a
+ceiling. And only the two existing presets were measured: whether some
+intermediate policy — 256 KB in, 2 MB out, which would land near 60 ms — is a
+better default than either is untested. That is the only version of "raise the
+default" worth reopening, and it needs a real report of an addon being blocked
+before it justifies the churn.
 
 ## D. Huffman decode LUT — dropped
 
