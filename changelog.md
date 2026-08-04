@@ -1,4 +1,4 @@
-### LibDeflateGuard unreleased
+### LibDeflateGuard v1.2.0
 
 - **Added.** `LibDeflateGuard.WithPolicy(policy)` returns an object bound to
   one decode policy. It carries the whole budget: the decompressors take the
