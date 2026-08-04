@@ -89,9 +89,35 @@
   possible.</p>
 
 <ul>
-    <li><strong>Behaviour change.</strong> A <code>configs</code> table containing <code>max_input_bytes</code> used to
-    raise as an unsupported key. It is now accepted.</li>
+    <li><p><strong>Behaviour change.</strong> A <code>configs</code> table containing <code>max_input_bytes</code> used to
+    raise as an unsupported key. It is now accepted.</p></li>
+    <li><p><strong>Fixed.</strong> <code>DecodeForPrint</code> accepted a string one symbol longer than any
+    encoding can be, and decoded it to the same value as its own prefix:
+    <code>DecodeForPrint(&quot;Hj2ya&quot;)</code> returned <code>&quot;abc&quot;</code>, exactly as
+    <code>DecodeForPrint(&quot;Hj2y&quot;)</code> does. A trailing group of one symbol carries 6
+    bits, fewer than the 8 needed to emit a byte, so the symbol was dropped
+    rather than refused, and the existing check on unused bits still passed
+    when that symbol was the zero symbol. <code>EncodeForPrint</code> turns n bytes into
+    <code>ceil(4n/3)</code> symbols — 0, 2, 3, 4, 6, 7, 8, 10, 11, 12 and so on — a
+    sequence that never reaches a length congruent to 1 modulo 4, so such a
+    length is now refused as <code>invalid_print</code>. The length tested is the one left
+    after the leading and trailing control characters and spaces are stripped,
+    and the new rule subsumes the narrower <code>strlen == 1</code> check it replaces.</p></li>
 </ul>
+
+<p>  This is a strictness fix. No string <code>EncodeForPrint</code> can produce has an
+  affected length, so canonical data, including RCLootCouncil export data,
+  round trips unchanged. A caller that fed the decoder hand-edited or
+  truncated strings may now see <code>invalid_print</code> where a value was previously
+  returned, which is the point: two different strings decoding to one value
+  is exactly what a decoder guarding untrusted input should not do.</p>
+
+<p>  Inherited from upstream LibDeflate <code>1.0.2-release</code>, and present in v1.1.0
+  and v1.1.2 as well, so it is not a regression from recent work. The
+  escape-based channel and custom codecs do not use the 6-bit packing and are
+  unaffected. Found by the nightly fuzz soak; the fuzz suite reaches the case
+  at roughly 1.4e-6 per candidate, so the regression test is a fixed vector
+  rather than a probabilistic one.</p>
 
 <h3>LibDeflateGuard v1.1.2</h3>
 

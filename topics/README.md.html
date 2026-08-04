@@ -357,7 +357,11 @@ payload at exactly the cap deflates to a few bytes more than it started with.</p
 
 <p>The print codec stays compatible with existing LibDeflate consumers, including
 canonical RCLootCouncil export data. Previously tolerated nonzero unused bits
-in a final print-codec group are rejected as <code>invalid_print</code>. Decode methods
+in a final print-codec group are rejected as <code>invalid_print</code>, and so is a
+string whose length no encoding can have: <code>EncodeForPrint</code> turns n bytes into
+<code>ceil(4n/3)</code> symbols, which is never congruent to 1 modulo 4, so a stripped
+length of 5, 9, 13 and so on is refused rather than decoded as its own
+prefix. Decode methods
 return <code>nil, error_code</code> on invalid untrusted input. Encode methods remain
 programmer-facing and retain the original argument-error behavior.</p>
 
