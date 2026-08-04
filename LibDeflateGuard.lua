@@ -3698,7 +3698,17 @@ local function DecodeForPrintInternal(str)
   str = str:gsub("[%c ]+$", "")
 
   local strlen = #str
-  if strlen == 1 then return nil end
+  -- EncodeForPrint packs 3 bytes into 4 symbols, so n bytes always become
+  -- ceil(4n/3) symbols: 0, 2, 3, 4, 6, 7, 8, 10, 11, 12 ... A length
+  -- congruent to 1 modulo 4 never appears in that sequence, so no encoder
+  -- output can have one and such a string must be refused here.
+  --
+  -- Without this, a trailing group of exactly one symbol contributes 6 bits,
+  -- fewer than the 8 needed to emit a byte. The symbol is then dropped
+  -- instead of rejected, and the "cache ~= 0" check below still passes when
+  -- it is the zero symbol, so "Hj2ya" used to decode to the same value as
+  -- its prefix "Hj2y". This test subsumes the "strlen == 1" case it replaces.
+  if strlen % 4 == 1 then return nil end
   local strlenMinus3 = strlen - 3
   local i = 1
   local buffer = {}

@@ -69,6 +69,16 @@ cover" below — but because C is the first change since the fork began that
 materially restructures the decode path, and it should land on top of a
 working soak and a working differential gate.
 
+**Outcome.** The soak paid for itself on its first scheduled night. Seed
+`2089977218` at 1000 iterations failed in the print codec: `DecodeForPrint`
+accepted a string one symbol longer than any encoding can be and decoded it to
+the same value as its prefix, a defect inherited from upstream LibDeflate
+`1.0.2-release` that every release of this fork has carried. The printed seed
+replayed the failure on another machine, which is the property item 1 was
+specified for — the CI-only default single-iteration pass had run that code on
+every pull request for the whole life of the repository without reaching it, at
+roughly 1.4e-6 per candidate. See `changelog.md`.
+
 ## B. Bound policy instance, plus a compressor cap
 
 One pull request covering two related API changes.

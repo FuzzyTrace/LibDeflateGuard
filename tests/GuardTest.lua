@@ -299,6 +299,71 @@ Test("print decoder returns stable non-throwing errors", function()
   end
 end)
 
+Test("print decoder rejects lengths no encoder can emit", function()
+  -- Found by the nightly fuzz soak, seed 2089977218 at 1000 iterations.
+  -- "Hj2ya" is one symbol longer than any encoding can be, and it used to
+  -- decode to the same value as its own 4-symbol prefix: the trailing group
+  -- of one symbol carries 6 bits, too few to emit a byte, so it was dropped
+  -- rather than refused. Inherited from upstream LibDeflate 1.0.2-release,
+  -- so v1.1.0 and v1.1.2 carry it too. This is not a probabilistic check --
+  -- the fuzz suite reaches it at roughly 1.4e-6 per candidate, which is why
+  -- it took a scheduled soak to surface.
+  AssertEqual(Guard:DecodeForPrint("Hj2y"), "abc", "canonical print vector")
+  local output, decode_error = Guard:DecodeForPrint("Hj2ya")
+  AssertEqual(output, nil, "one-symbol tail output")
+  AssertEqual(decode_error, Guard.ERRORS.INVALID_PRINT, "one-symbol tail error")
+
+  -- The rule is structural, so pinning that one string would not state it.
+  -- EncodeForPrint packs 3 bytes into 4 symbols, so n bytes always become
+  -- ceil(4n/3) symbols: 0, 2, 3, 4, 6, 7, 8, 10, 11, 12 ... That sequence
+  -- never hits a length congruent to 1 modulo 4, so lengths 5 and 9 must be
+  -- refused however they are spelled. Every symbol below is a real member of
+  -- the 64-symbol alphabet, so the refusal is the length rule and not an
+  -- unknown character.
+  for _, strlen in ipairs({5, 9}) do
+    for _, symbol in ipairs({"a", "b", "H", "j", "2", "y", "(", ")"}) do
+      local label = symbol .. " x " .. strlen
+      assert(Guard:DecodeForPrint(string.rep(symbol, 4)) ~= nil,
+             "alphabet precondition: " .. symbol)
+      output, decode_error = Guard:DecodeForPrint(string.rep(symbol, strlen))
+      AssertEqual(output, nil, "unreachable length output: " .. label)
+      AssertEqual(decode_error, Guard.ERRORS.INVALID_PRINT,
+                  "unreachable length error: " .. label)
+    end
+    -- The decoder strips leading and trailing control characters and spaces
+    -- first, so the length that must be judged is the stripped one. Padding
+    -- must not launder an unreachable length into an accepted one.
+    AssertEqual(Guard:DecodeForPrint("  " .. string.rep("a", strlen) .. " \n"),
+                nil, "padding does not excuse length " .. strlen)
+  end
+
+  -- The other side of the rule: every length the encoder CAN emit still round
+  -- trips, so the new test refuses no more than it should. Fixed bytes, not
+  -- random ones, so a failure here is reproducible.
+  local residues_seen = {}
+  for n = 0, 32 do
+    local bytes = {}
+    for i = 1, n do bytes[i] = string.char((i * 37 + 11) % 256) end
+    local plain = table.concat(bytes)
+    local encoded = Guard:EncodeForPrint(plain)
+    AssertEqual(#encoded, math.ceil(4 * n / 3), "encoded length for n=" .. n)
+    assert(#encoded % 4 ~= 1, "encoder emitted an unreachable length at n=" .. n)
+    AssertEqual(Guard:DecodeForPrint(encoded), plain, "round trip n=" .. n)
+    residues_seen[#encoded % 4] = true
+  end
+  -- Those round trips only mean something if they covered the three residues
+  -- the rule leaves accepted.
+  for _, residue in ipairs({0, 2, 3}) do
+    assert(residues_seen[residue],
+           "no round trip covered length % 4 == " .. residue)
+  end
+
+  -- Length 0 is 0 modulo 4, so the empty input keeps decoding to the empty
+  -- string, before and after the strip.
+  AssertEqual(Guard:DecodeForPrint(""), "", "empty print input")
+  AssertEqual(Guard:DecodeForPrint("  \n"), "", "whitespace-only print input")
+end)
+
 Test("limit presets", function()
   for key, value in pairs(Guard.LIMIT_PRESETS.addon) do
     AssertEqual(Guard.DEFAULT_LIMITS[key], value,
@@ -599,9 +664,12 @@ Test("a policy instance derives every cap from max_input_bytes", function()
               Guard.ERRORS.INPUT_LIMIT_EXCEEDED, "print cap fires at 401")
   assert(small:DecodeForPrint(string.rep("a", 400)) ~= nil,
          "print cap must admit exactly 400")
-  -- The unbound entry point still uses the load-time default, so 401 bytes
-  -- proves the instance cap is the thing being applied.
-  assert(Guard:DecodeForPrint(string.rep("a", 401)) ~= nil,
+  -- The unbound entry point still uses the load-time default, so a string
+  -- past the instance's 400 proves the instance cap is the thing being
+  -- applied. 404 rather than 401 because a length congruent to 1 modulo 4 is
+  -- one the encoder can never emit and the decoder now refuses outright,
+  -- which would make this assert fail for a reason it is not about.
+  assert(Guard:DecodeForPrint(string.rep("a", 404)) ~= nil,
          "the unbound print decoder must be unaffected by an instance")
 
   for _, method in ipairs({

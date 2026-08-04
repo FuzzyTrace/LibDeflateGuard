@@ -32,6 +32,33 @@
 - **Behaviour change.** A `configs` table containing `max_input_bytes` used to
   raise as an unsupported key. It is now accepted.
 
+- **Fixed.** `DecodeForPrint` accepted a string one symbol longer than any
+  encoding can be, and decoded it to the same value as its own prefix:
+  `DecodeForPrint("Hj2ya")` returned `"abc"`, exactly as
+  `DecodeForPrint("Hj2y")` does. A trailing group of one symbol carries 6
+  bits, fewer than the 8 needed to emit a byte, so the symbol was dropped
+  rather than refused, and the existing check on unused bits still passed
+  when that symbol was the zero symbol. `EncodeForPrint` turns n bytes into
+  `ceil(4n/3)` symbols — 0, 2, 3, 4, 6, 7, 8, 10, 11, 12 and so on — a
+  sequence that never reaches a length congruent to 1 modulo 4, so such a
+  length is now refused as `invalid_print`. The length tested is the one left
+  after the leading and trailing control characters and spaces are stripped,
+  and the new rule subsumes the narrower `strlen == 1` check it replaces.
+
+  This is a strictness fix. No string `EncodeForPrint` can produce has an
+  affected length, so canonical data, including RCLootCouncil export data,
+  round trips unchanged. A caller that fed the decoder hand-edited or
+  truncated strings may now see `invalid_print` where a value was previously
+  returned, which is the point: two different strings decoding to one value
+  is exactly what a decoder guarding untrusted input should not do.
+
+  Inherited from upstream LibDeflate `1.0.2-release`, and present in v1.1.0
+  and v1.1.2 as well, so it is not a regression from recent work. The
+  escape-based channel and custom codecs do not use the 6-bit packing and are
+  unaffected. Found by the nightly fuzz soak; the fuzz suite reaches the case
+  at roughly 1.4e-6 per candidate, so the regression test is a fixed vector
+  rather than a probabilistic one.
+
 ### LibDeflateGuard v1.1.2
 
 - **Fixed.** Decoding an encode result inline failed. `codec:Encode` forwarded
