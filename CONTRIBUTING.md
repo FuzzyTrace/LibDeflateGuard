@@ -21,16 +21,19 @@ compared, call for call, against the latest release tag: every public decode
 entry point must return an identical tuple for the same input. A divergence
 fails `differential_gate` and blocks the merge.
 
-Some divergences are intended. v1.1.2 changed the codec encoder arity on
-purpose, and against v1.1.1 that shows up as a divergence. When the change is
-deliberate, a maintainer applies the `differential-divergence-ok` label to the
-pull request. The gate re-runs, still prints the divergence in the log and in
-the job summary, and passes. Removing the label makes it block again.
+Some divergences are intended. v1.2.0 made `DecodeForPrint` refuse a length no
+encoder can emit, so against v1.1.2 it correctly reports that a string which
+used to decode now returns `nil, invalid_print`. When the change is deliberate,
+a maintainer applies the `differential-divergence-ok` label to the pull
+request. The gate re-runs, still prints the divergence in the log and in the
+job summary, and passes. Removing the label makes it block again.
 
-Reproduce the comparison locally:
+Reproduce the comparison locally. Resolve the reference the same way the
+workflow does, rather than naming a tag that goes stale at the next release:
 
 ```sh
-git worktree add ../libdeflateguard-reference v1.1.2
+tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+git worktree add ../libdeflateguard-reference "${tag}"
 LIBDEFLATEGUARD_FUZZ_REFERENCE=../libdeflateguard-reference/LibDeflateGuard.lua \
   LIBDEFLATEGUARD_FUZZ_SEED=1234 \
   LIBDEFLATEGUARD_FUZZ_ITERATIONS=25 \
