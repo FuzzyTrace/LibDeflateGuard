@@ -68,6 +68,25 @@ You can use LuaJIT or the original Lua interpreter. I prefer LuaJIT during devel
    differential mode against the last released revision whenever the decode
    path or a codec changes.
 
+   [BenchTest.lua](BenchTest.lua) times the same paths rather than checking
+   them, and also needs no external dependencies:
+
+   `luajit -joff tests/BenchTest.lua`
+
+   Set `LIBDEFLATEGUARD_BENCH_REFERENCE` to an upstream `LibDeflate.lua` or an
+   older `LibDeflateGuard.lua` for a comparison table,
+   `LIBDEFLATEGUARD_BENCH_ROUNDS` to change the number of alternated rounds,
+   and `LIBDEFLATEGUARD_BENCH_SEED` to change the corpus seed. It shares
+   FuzzTest's private generator, so a seed means the same corpus on every
+   interpreter.
+
+   Only its byte-identical cross-checks can fail it; no timing result ever
+   does. Prefer `-joff`, which is the World of Warcraft interpreter proxy
+   every figure this repository publishes is taken on. See
+   [dev_docs/toolchain.md](../dev_docs/toolchain.md) for how to read the
+   table it prints, and for what each of the three environment variables
+   accepts and rejects.
+
 2. Run complete code coverage test:
 
    First delete the file _luacov.stats.out_, if exists.
