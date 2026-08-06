@@ -1,13 +1,16 @@
-# Roadmap after v1.1.2
+# Roadmap
 
-Ordered work items agreed after the v1.1.2 regression fixes. Each is a
-separate pull request. Do them in order: every item assumes the ones above it
-have landed.
+Ordered work items. Each is a separate pull request. Do them in order: every
+item assumes the ones above it have landed.
 
 GitHub issues are disabled on this repository, so this file is the tracking
 artifact. Tick items off here as they land.
 
 ## Status
+
+Items A–D were agreed after the v1.1.2 regression fixes. Items E–G were agreed
+after an external review of the whole fork against upstream `afc3b78`, and
+target v1.2.1.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
@@ -15,6 +18,10 @@ artifact. Tick items off here as they land.
 | B   | Bound policy instance, plus a compressor cap    | done       |
 | C   | Resumable decode (prototype only)               | prototyped |
 | D   | Huffman decode LUT                              | dropped    |
+| E   | Close the channel-codec constructor seam        | done       |
+| F   | Benchmark harness against a reference module    | done       |
+| G   | Document performance, migration, and scope      | done       |
+| H   | Preset mutation carries into a derived policy   | planned    |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -276,6 +283,473 @@ would trade that clean story for a 512-entry allocation per dynamic block
 which would itself need work-unit charging, and at `max_blocks = 256` that is
 131072 entries. The win is smallest for the short messages that dominate the
 World of Warcraft use case. Revisit only if someone reports a real stall.
+
+## E. Close the channel-codec constructor seam
+
+One pull request. A behaviour-preserving hardening fix, plus its regression
+test.
+
+### The defect
+
+v1.1.2 bound `_Adler32` privately and made `LibDeflateGuard.ERRORS` an
+inspection copy, on the stated grounds that "anything holding the module could
+have replaced the checksum check" and that "the stable error codes were not
+stable against mutation". The same seam is still open one layer down.
+
+`GenerateWoWAddonChannelCodec` and `GenerateWoWChatChannelCodec` build their
+codecs by calling `LibDeflateGuard:CreateCodec(...)` — a read of the public,
+writable module table. The channel codecs are cached lazily, so that read
+happens at first use, which is after any consumer has had the chance to write
+to the table. Demonstrated on v1.2.0:
+
+```text
+addon decode after CreateCodec swap:   payload  <-- injected
+```
+
+`internals.InternalClearCache()` nils both cached codecs and is public, so the
+window re-opens on demand even after first use:
+
+```text
+before:                      payload
+after ClearCache + swap:     payload <-- injected
+```
+
+The `type(codec.Decode) ~= "function"` check in `DecodeForWoWAddonChannel` and
+`DecodeForWoWChatChannel` does not help: a substituted codec satisfies it.
+That check guards against a broken codec, not a chosen one.
+
+### The fix
+
+Call the private constructor, which both generators already have in scope:
+
+```lua
+local function GenerateWoWAddonChannelCodec()
+  return CreateCodecInternal("\000", "\001", "", _default_codec_input_bytes)
+end
+```
+
+and likewise for the chat codec with
+`CreateCodecInternal(reserved_chars, "\029\031", "\015\020", _default_codec_input_bytes)`.
+
+`LibDeflateGuard:CreateCodec` adds only a type check over three string
+literals, and passes exactly `_default_codec_input_bytes` as the cap, so the
+constructed codecs are identical. **This changes no decode output.** State
+that expectation in the pull request: `differential_gate` must come back
+clean, and if it does not, the change is wrong.
+
+`InternalClearCache` stays public and unchanged. `tests/Test.lua:407` uses it,
+and once the generators no longer read the public table, clearing the cache
+can only rebuild the same codec. It stops being a seam rather than being
+removed.
+
+### What this deliberately does not do
+
+- It does not lock `LibDeflateGuard.internals`. That table is documented as
+  test-only and `tests/Test.lua` reads five entries from it. After this fix
+  nothing in it can alter a decode result.
+- It does not freeze the module table or a policy instance. See item G for
+  why, and for the scope statement that replaces the implicit claim.
+- It does not touch a codec returned by a caller's own `CreateCodec` call.
+  That object is the caller's, and reshaping it is legitimate. The regression
+  test pins that boundary explicitly so a later hardening pass does not close
+  it by accident.
+
+### Regression test
+
+Add one test to `tests/GuardTest.lua`. It needs a module whose codec cache is
+cold, so build fresh instances with `loadfile`, the way the existing
+"addon-private module export" test already does, rather than reusing the
+suite-level `Guard`:
+
+1. **Cold cache.** Fresh module, replace `CreateCodec` with a wrapper that
+   poisons the returned codec's `Decode`, then round trip through
+   `EncodeForWoWAddonChannel` / `DecodeForWoWAddonChannel` and the chat pair.
+   Both must return the payload unmodified.
+2. **Warm cache re-opened.** Fresh module, force the codec to be built, assert
+   the baseline, then poison `CreateCodec` and call
+   `internals.InternalClearCache()`. The next decode must still return the
+   payload unmodified.
+3. **Caller-owned codec.** Fresh module, poison `CreateCodec`, then call it
+   directly. The poison _must_ take effect, which pins the boundary above as
+   intentional.
+
+Fixed vectors, not fuzz. `FuzzTest` drives inputs, not module tampering.
+
+### Release
+
+Patch release, v1.2.1. Four version sites plus a new
+`rockspecs/libdeflateguard-1.2.1-1.rockspec`;
+`tools/check_version_consistency.sh` is the gate. Changelog entry describes it
+as completing the v1.1.2 hardening rather than as a new one, because that is
+what it is.
+
+## F. Benchmark harness against a reference module
+
+One pull request. `tests/BenchTest.lua`, modelled on the differential mode of
+`tests/FuzzTest.lua`.
+
+### Why
+
+The fork has never published a number against upstream, and item G needs one.
+The measurements that exist are scattered across changelog prose and this
+file, were taken by hand, and are not reproducible by a reader. Worse, the
+v1.0.1 changelog line "World of Warcraft addon-channel decoding about twice as
+fast" is guard-v1.0.0 → guard-v1.0.1 — the fork recovering overhead it had
+itself added. Against upstream that path is materially _slower_. Nothing in
+the changelog is false and nothing in it says so either.
+
+### Shape
+
+Environment, matching the names `FuzzTest` already uses:
+
+- `LIBDEFLATEGUARD_BENCH_REFERENCE` — path to a reference module. Accepts
+  either an upstream `LibDeflate.lua` or an older `LibDeflateGuard.lua`.
+  Unset means benchmark this module alone and print absolute numbers.
+- `LIBDEFLATEGUARD_BENCH_ROUNDS` — alternated A/B rounds, default 21.
+- `LIBDEFLATEGUARD_BENCH_SEED` — corpus seed.
+
+Requirements, each of which exists because a previous measurement in this
+repository went wrong without it:
+
+- **Reuse `FuzzTest`'s private PRNG, not `math.random`.** A published number
+  must come from a corpus that is identical on every interpreter.
+- **Report the median of alternated rounds, not a best-of.** Item C already
+  established that a best-of on this workload reads 6.9% faster on a branch
+  that cannot be faster. Print the spread alongside the median so a reader can
+  see when a result is inside the measurement floor, and say so in words when
+  it is.
+- **Cross-check outputs before timing.** Every shape asserts that both modules
+  return byte-identical results. This is free and it is the only part of the
+  harness allowed to fail.
+- **Adapt the call shape to the reference.** Upstream `DecompressDeflate(str)`
+  takes no policy and its codec decoders take no cap. Detect with
+  `reference._NAME == "LibDeflateGuard"` and dispatch, rather than passing
+  arguments upstream will read as something else — which is the same footgun
+  the v1.1.2 fix was about.
+- **Print the interpreter and `jit.status()`.** A number without them is not a
+  measurement.
+- **Never exit non-zero on a timing threshold.**
+
+### Shapes to cover
+
+The six migration-relevant paths, sized like real traffic:
+
+`DecompressDeflate` on compressible text; `DecompressDeflate` on a
+stored-block member; `DecodeForWoWAddonChannel`; `DecodeForWoWChatChannel`;
+`DecodeForPrint`; and a small-message round trip
+(decode-then-decompress at a few hundred bytes), which is the shape the World
+of Warcraft use case actually generates and the one where fixed per-call
+overhead shows up.
+
+Plus the two saturation shapes item C's table already uses — match bomb and
+import blob, each run at `addon` and at `generous` — so the worst-accepted-work
+numbers become regenerable rather than folklore. These need no reference
+module and should run in the unset-reference mode too.
+
+Report time and allocated bytes per call for each.
+
+### CI
+
+**No workflow.** Timing on a shared GitHub runner is noise, and this
+repository has already written down that "the measurement floor is the
+result". Document the invocation in `dev_docs/toolchain.md` and add it to
+`CONTRIBUTING.md` next to the differential gate, as the thing to run by hand
+when a change touches the decode path:
+
+```text
+git worktree add ../upstream-baseline afc3b78d12fb3bcfa6b21e5332031ad3d7572e19
+LIBDEFLATEGUARD_BENCH_REFERENCE=../upstream-baseline/LibDeflate.lua \
+  luajit tests/BenchTest.lua
+```
+
+Revisit only if a regression ships that a scheduled run would have caught.
+
+## G. Document performance, migration, and scope
+
+One pull request, documentation only, landing after E and F. Three gaps, all
+of the same kind: something true was measured or decided, and the place a
+reader would look does not say it.
+
+### G1. A performance section in `README.md`
+
+The README contains no performance claim of any kind today — not a false one,
+none at all. Add `## Performance` between `## Compression and codecs` and
+`## Security scope`, carrying:
+
+1. **A vs-upstream table**, regenerated on the release machine with item F.
+   Indicative figures from the review, `luajit -joff` as the World of Warcraft
+   interpreter proxy, upstream at `afc3b78`:
+
+   | Path                                   | Δ vs upstream |
+   | -------------------------------------- | ------------- |
+   | `DecompressDeflate`, compressible text | +6 to +7%     |
+   | `DecompressDeflate`, stored blocks     | −38%          |
+   | `DecodeForWoWAddonChannel`             | +52%          |
+   | `DecodeForWoWChatChannel`              | +20%          |
+   | `DecodeForPrint`                       | about flat    |
+   | Small message, decode then decompress  | +8 to +9%     |
+   | Every compressor                       | unchanged     |
+
+   Allocation is within a few percent on every path.
+
+2. **Where the cost is.** Per-symbol budget charging on the Huffman path; a
+   second linear pass over the input for the canonical-escape check on the
+   channel decoders, which is what the +52% buys and is the direct cost of
+   rejecting non-canonical escapes.
+
+3. **Where the fork is faster.** The unrolled `ReadBytes` reading through
+   `_byte_to_char` instead of `string_sub`. Note that this is unrelated to the
+   guard and is a straight win.
+
+4. **The worst-accepted-work table**, promoted out of this file into
+   user-facing documentation, because it is what sizes a policy:
+
+   | Preset     | Shape       | Input   | Decoded | Time   | Heap    |
+   | ---------- | ----------- | ------- | ------- | ------ | ------- |
+   | `addon`    | match bomb  | 0.7 KB  | 512 KB  | 9 ms   | 1.8 MB  |
+   | `addon`    | import blob | 41.6 KB | 512 KB  | 14 ms  | 2.3 MB  |
+   | `generous` | match bomb  | 11.3 KB | 8 MB    | 126 ms | 14.4 MB |
+   | `generous` | import blob | 662 KB  | 8 MB    | 237 ms | 22.6 MB |
+
+5. **One machine.** State the hardware and interpreter, state that the real
+   client interpreter is slower, and give the command to regenerate.
+
+Also deal with `docs/benchmark.md`, which the fork inherited and has never
+touched. It compares upstream LibDeflate with LibCompress on a 2019 machine
+and says nothing about this module, so a reader who finds it first gets
+numbers that are not about the code they are running. Do not regenerate it: it
+needs LibCompress and a corpus this repository does not carry, and the
+comparison it makes is not the one a consumer of this fork is asking. Add a
+header saying it is inherited upstream material describing upstream
+LibDeflate, and point at the new README section for anything about
+LibDeflateGuard.
+
+### G2. A migration section in `README.md`
+
+Add `## Migrating from LibDeflate` directly after `## What is different`.
+Every item below already holds; none of them is currently where someone
+porting an addon will look, and all of them fail at run time rather than at
+load time.
+
+- **`Decompress(Compress(x))` is refused on the module.** The compressor's
+  `padding_bitlen` lands in the decompressor's `limits` slot and is not a
+  policy, so the call returns `nil, invalid_argument`. Use a policy instance,
+  which ignores the extra value, or name the intermediate. This is stated
+  today at README:180, inside the bound-instance subsection, which is not
+  where a reader arrives from upstream's README. Repeat it here with the
+  before/after.
+- **The default budget is 64 KiB in and 512 KiB out.** The single most likely
+  upgrade break. Point at `LIMIT_PRESETS.generous` and at the measured cost of
+  choosing it.
+- **Decoders return `nil, code` instead of raising on a wrongly typed
+  argument.** Existing `pcall` wrappers around a decode still work and are now
+  dead code.
+- **`codec:Encode` and the channel encoders return exactly one value.** The
+  `string.gsub` substitution count is gone.
+- **A `WithPolicy` instance caps compression input at `max_input_bytes`.**
+  Binding an instance for safe decoding imposes a 64 KiB compression ceiling
+  under the default policy. Defensible and surprising; say it.
+- **Channel decoding costs 20–50% more than upstream.** Link to G1.
+- **An arity table** for every encoder and decoder, success and failure paths.
+
+### G3. Scope statements
+
+Two edits to `## Security scope`, one to the intro, one to the changelog.
+
+- **What mutation resistance covers.** After item E the module resists a
+  consumer that writes to `LibDeflateGuard`: `ERRORS`, `DEFAULT_LIMITS` and
+  `LIMIT_PRESETS` are inspection copies, the Adler-32 check and the channel
+  codec constructors are privately bound, and a policy instance holds its
+  resolved policy in an upvalue. State also what it does not cover: a
+  `WithPolicy` instance is an ordinary table whose _methods_ can be replaced
+  by anything holding it — only the policy is sealed — and `internals` is
+  test-only and writable. And state the frame: in World of Warcraft's shared
+  Lua state this is defence in depth against accident and against a library
+  that reaches too far, not a boundary against a hostile addon that can
+  already reach your tables. Claiming otherwise would be claiming something
+  Lua cannot deliver here.
+- **The stall is bounded, not removed.** `## Safe decoding` says the budgets
+  are per call; the millisecond consequence lives only in this file. Put it in
+  the README: the `addon` preset's worst case is 9–14 ms, which is one frame
+  at 60 fps, so a rejected or maximal message is a dropped frame rather than a
+  freeze; `generous` is 126–237 ms and is not frame-safe; and bounding a
+  _stream_ of messages needs transport context and remains the caller's job. A
+  message flood is still an exposure.
+- **Intro paragraph.** Keep "security-hardened" — it is accurate — and scope
+  it in the same sentence to what it means here: bounded single-call decoding
+  and strict rejection of non-canonical input, with the resource limits as the
+  part that closes a reachable vulnerability. `## Security scope` already says
+  this well; the summary at the top of the file should not overshoot it.
+- **Changelog.** Add one clause to the v1.0.1 entry making its baseline
+  explicit: those figures compare v1.0.1 with v1.0.0, not with upstream. No
+  number changes. The alternative — leaving shipped history untouched and
+  disambiguating only in the v1.2.1 entry — is worse, because the misreadable
+  sentence stays the one a reader finds first.
+
+### Not proposed
+
+**Making `Decompress(Compress(x))` work on the module.** Accepting a number in
+the `limits` slot and ignoring it would close the trap, and `padding_bitlen`
+is always 0–7 while a policy is always a table, so the disambiguation is
+sound. It is still not proposed: it makes one entry point silently discard an
+argument that any other malformed value in the same position is refused for,
+and that is the class of quiet asymmetry that produced the v1.1.2 bug in the
+first place. The decision to route callers to `WithPolicy` was already made
+and tested; G2 makes it findable. Reopen only if a real consumer reports
+hitting it.
+
+### Outcome
+
+Landed. The G1 table above is left as written, because the point of item F was
+to find out whether the review's hand figures survived a harness, and two of
+them did not. Recording that is worth more than a tidy file.
+
+Regenerated with `tests/BenchTest.lua` under `luajit -joff` against upstream
+`afc3b78`, **ten** independent runs, medians of 21 alternated rounds. An
+earlier pass over only three runs is superseded: three runs of a comparison
+whose own spread reaches ±27% do not describe what a re-run produces, and one
+of its conclusions did not survive being asked ten times.
+
+| Path                                   | G1 said    | Harness measured                |
+| -------------------------------------- | ---------- | ------------------------------- |
+| `DecompressDeflate`, compressible text | +6 to +7%  | +3.5% to +6.2%, inside spread   |
+| `DecompressDeflate`, stored blocks     | −38%       | −40.7% to −43.5%                |
+| `DecodeForWoWAddonChannel`             | +52%       | +46.8% to +54.0%                |
+| `DecodeForWoWChatChannel`              | +20%       | +11.1% to +17.3%, inside spread |
+| `DecodeForPrint`                       | about flat | −2.9% to +3.1%, inside spread   |
+| Small message, decode then decompress  | +8 to +9%  | +7.9% to +11.5%, inside spread  |
+
+Findings, in descending order of how wrong the old table was:
+
+- **`DecodeForWoWChatChannel` is not +20%.** It measures 11 to 17% across these
+  ten runs and cleared its own spread on none of them; fresh runs clear it only
+  rarely. The +20% came from a hand-rolled benchmark on a different corpus. The
+  README publishes "about flat", with the range stated in prose as something not
+  to quote.
+- **Three rows were published as figures the measurement cannot support.**
+  Compressible text, `DecodeForWoWChatChannel` and the small round trip all sat
+  inside the comparison's spread on all ten runs, and clear it only rarely on
+  fresh ones. Only stored blocks and `DecodeForWoWAddonChannel` clear the floor,
+  and both do so by a wide margin and repeat to within a few points.
+- **Correction to the three-run pass: compressible text does not change sign.**
+  That pass justified calling the row "about flat" partly on the grounds that
+  it read −7.0% on one run and +6.5% on another. Over ten runs the row is
+  positive every single time, from +3.5% to +6.2%, and the negative reading did
+  not reproduce once. It was one observation out of eleven and it was noise.
+  The row is still reported as "about flat", because it did not clear its own
+  spread on any of the ten runs — but on the honest grounds, which are that the
+  difference is below the floor, not that the sign is unstable. The README now
+  gives it the same prose treatment `DecodeForWoWChatChannel` and the small
+  round trip get: positive on every run, at roughly 4 to 6%, do not quote a
+  figure. A justification that rests on an artefact is worth correcting even
+  when the conclusion it supported happens to survive.
+- **The two figures that survived moved a little and in opposite directions.**
+  Stored blocks are better than −38%. The addon channel straddles +52% rather
+  than sitting under it: ten runs span +46.8% to +54.0%, so "about 50%" is what
+  the data supports and the three-run +48.5% to +48.8% was a 0.3-point window
+  cut out of 7 points of real variation. Neither changes any conclusion drawn
+  from them.
+- **The evidence column has to be as wide as re-running is.** Its stated
+  purpose is that a reader can check the middle column against it, and a reader
+  who regenerates has to land inside it. Every range published in the README is
+  now the full span of ten runs rather than the span of the first few.
+
+The G1 worst-accepted-work table carried a `Heap` column taken from item C's
+separate hand measurement. The harness cannot regenerate it: it reports bytes
+allocated per call with the collector stopped, which counts garbage, and peak
+heap cannot be sampled from inside Lua at all. The README therefore publishes
+the harness's allocation figures under a column named for what they are, and
+keeps item C's peak-heap numbers in prose, attributed as an earlier hand
+measurement. Merging the two quantities into one column would have been the
+easy option and would have published a number nobody could reproduce.
+
+The saturation input sizes also differ from item C's, because the harness
+builds its payloads differently — its match bomb is 2.5 KB in for 512 KB out
+where item C's was 0.7 KB. Three of the four times agree closely; the
+`generous` match bomb does not, at 143–155 ms across ten runs against item C's
+126 ms, which is what a differently built payload for the same output cap
+buys. The README publishes the regenerable sizes and times, and the worst-case
+column is the highest median observed rounded up, never a mean and never
+rounded down.
+
+One further claim did not survive, and was not part of the specification.
+`README.md` said peak heap is "roughly 3 to 4 times the decoded size" and that
+the `generous` 8 MiB cap therefore implies 26 to 32 MiB. A `generous` decode
+saturating its output cap allocates 16.4 to 24.6 MB in total, which bounds peak
+heap from above, so the published peak was above what the call allocates. The
+multiplier is real at 512 KiB and falls at 8 MiB, because the 32768-byte
+sliding window is a fixed cost. Corrected, with the measurement, in
+`## Safe decoding`.
+
+## H. Preset mutation carries into a derived policy — planned
+
+Found by review of item G's documentation, not by a test. The `README.md`
+`## Security scope` bullet has been corrected to state the limit precisely;
+this item proposes the code fix, which is deliberately not part of that
+documentation change.
+
+### The defect
+
+`LIMIT_PRESETS` is described as an inspection copy, and it is one — but the
+copy is made once, at load time, and then hung on the public module table. So
+mutating it cannot change what the module's own default path enforces, and
+that much of the claim holds. What does not hold is that mutating it "changes
+nothing the decoder enforces", because the README also tells a migrating
+caller to read an entry back out and pass it to `WithPolicy`:
+
+```lua
+G.LIMIT_PRESETS.generous.max_output_bytes = 4096
+local guard = G.WithPolicy(G.LIMIT_PRESETS.generous)  -- enforces 4096, not 8 MiB
+```
+
+It loosens as readily as it tightens: the same write hands an `addon` instance
+a 512 MB output cap, which is the direction that matters for a fork whose
+reason to exist is bounding a decode.
+
+**This is the same shape as item E, with the caller performing the read.** In E
+the module itself read `LibDeflateGuard:CreateCodec` back off the public table
+at first use, after a consumer had had the chance to write to it. Here the
+module hands a caller a table and documents the read; the write window is the
+same one, and closing it needs the same move — hand out something a write
+cannot reach.
+
+The `limits` parameter has the same property for the same reason, and the same
+fix applies to whatever is decided for presets.
+
+### Two options
+
+1. **Per-access copies.** A metatable `__index` on `LIMIT_PRESETS` that returns
+   a fresh copy of the requested preset. A mutation then goes into a table
+   nothing else will ever see.
+
+2. **Deep-copy on the way in.** `WithPolicy` and the `limits` validator already
+   read every key they enforce; have them resolve into private storage from
+   the values read, which they largely do. The gap is that a mutated preset is
+   already the wrong _value_ by the time it is read, so this option does not
+   close the defect on its own — it only guarantees that a later mutation of
+   the same table cannot reach an instance already built. Worth stating so the
+   next reader does not mistake it for a fix.
+
+Only option 1 closes what the reproduction above shows.
+
+### The trade-off, which is why this is not already done
+
+Option 1 breaks table identity:
+
+```lua
+G.LIMIT_PRESETS.generous ~= G.LIMIT_PRESETS.generous
+```
+
+That is its own surprise, and a legitimate one for a caller who caches a
+preset, compares two policies, or uses one as a table key. It also allocates
+on every access to a table a hot path may read. Neither cost is large, and
+neither is obviously worth paying for a threat this repository's own scope
+statement describes as defence in depth against accident rather than a
+boundary against a hostile addon.
+
+Deciding it is the work. Do not land the code change without deciding whether
+the identity break is acceptable, and if it is, say so in `## Security scope`
+and in the migration section rather than leaving a reader to discover it.
 
 ## What the differential harness does not cover
 
