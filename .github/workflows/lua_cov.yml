@@ -64,6 +64,3 @@ jobs:
         with:
           name: code_coverage_report
           path: luacov.report.out
-
-      - name: Upload coverage result to codecov.io
-        run: bash <(curl --retry 10 --retry-delay 10 -s https://codecov.io/bash)
