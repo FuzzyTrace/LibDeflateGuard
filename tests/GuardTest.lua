@@ -489,6 +489,100 @@ Test("encoders return exactly one value and nest inside their decoders",
               "explicit cap still applies through a nested encode")
 end)
 
+-- Regression for the channel-codec constructor seam. Both channel codecs are
+-- cached lazily and used to be built by reading LibDeflateGuard:CreateCodec
+-- back off the public module table, so the read happened at first use, which
+-- is after any consumer has had the chance to write to that table. The
+-- type(codec.Decode) check in the channel decoders does not close it: a
+-- substituted codec satisfies that check. InternalClearCache is public and
+-- nils both cached codecs, so the window re-opened on demand even after first
+-- use.
+--
+-- These need a module whose codec cache is cold, so they build fresh
+-- instances with loadfile rather than reusing the suite-level Guard.
+local function FreshGuard()
+  local chunk = assert(loadfile("LibDeflateGuard.lua"))
+  local module = chunk("ConsumerAddon", {})
+  assert(type(module) == "table", "chunk must return the module")
+  return module
+end
+
+-- Both halves of the codec are poisoned, because both halves were open. The
+-- channel encoders read the same lazily cached codec the decoders do, so
+-- before the fix a replaced CreateCodec chose the codec
+-- EncodeForWoWAddonChannel emitted bytes through as well -- a tampered
+-- message going out is the same defect as a tampered message coming in, and
+-- only the decode direction had a test.
+local INJECTED_DECODE = "injected"
+local TAMPERED_ENCODE = "tampered"
+
+local function PoisonCreateCodec(module)
+  local real = module.CreateCodec
+  module.CreateCodec = function(self, reserved_chars, escape_chars, map_chars)
+    local codec, reason = real(self, reserved_chars, escape_chars, map_chars)
+    if type(codec) == "table" then
+      codec.Decode = function() return INJECTED_DECODE end
+      codec.Encode = function() return TAMPERED_ENCODE end
+    end
+    return codec, reason
+  end
+end
+
+Test("channel codecs ignore a replaced public CreateCodec", function()
+  local payload = "payload\000with sS|% and \029\031\015\020 bytes\255"
+  local pairs_to_check = {
+    {"addon", "EncodeForWoWAddonChannel", "DecodeForWoWAddonChannel"},
+    {"chat", "EncodeForWoWChatChannel", "DecodeForWoWChatChannel"}
+  }
+
+  -- The bytes an untampered module emits, so the encoder assertions below
+  -- compare against the real encoding rather than merely against the poison.
+  local clean = FreshGuard()
+  local clean_encoded = {}
+  for _, entry in ipairs(pairs_to_check) do
+    local Encode = entry[2]
+    clean_encoded[entry[1]] = clean[Encode](clean, payload)
+  end
+
+  -- 1. Cold cache. The poison is in place before the codec is ever built.
+  for _, entry in ipairs(pairs_to_check) do
+    local name, Encode, Decode = entry[1], entry[2], entry[3]
+    local guard = FreshGuard()
+    PoisonCreateCodec(guard)
+    AssertEqual(guard[Encode](guard, payload), clean_encoded[name],
+                name .. " cold cache encoder emits untampered bytes")
+    AssertEqual(guard[Decode](guard, guard[Encode](guard, payload)), payload,
+                name .. " cold cache round trip")
+  end
+
+  -- 2. Warm cache re-opened. Build the codec, assert the baseline, then poison
+  -- and clear the cache so the next call has to rebuild.
+  for _, entry in ipairs(pairs_to_check) do
+    local name, Encode, Decode = entry[1], entry[2], entry[3]
+    local guard = FreshGuard()
+    local encoded = guard[Encode](guard, payload)
+    AssertEqual(guard[Decode](guard, encoded), payload,
+                name .. " warm cache baseline")
+    PoisonCreateCodec(guard)
+    guard.internals.InternalClearCache()
+    AssertEqual(guard[Encode](guard, payload), clean_encoded[name],
+                name .. " warm cache encoder after ClearCache")
+    AssertEqual(guard[Decode](guard, encoded), payload,
+                name .. " warm cache round trip after ClearCache")
+  end
+
+  -- 3. Caller-owned codec. A codec a caller asks for is the caller's object,
+  -- and reshaping it is legitimate, so the poison must take effect here, in
+  -- both directions. This pins that boundary as intentional.
+  local owned = FreshGuard()
+  PoisonCreateCodec(owned)
+  local codec = assert(owned:CreateCodec("\000", "\001", ""))
+  AssertEqual(codec:Encode(payload), TAMPERED_ENCODE,
+              "caller-owned codec keeps a caller's encoder replacement")
+  AssertEqual(codec:Decode(codec:Encode(payload)), INJECTED_DECODE,
+              "caller-owned codec keeps a caller's replacement")
+end)
+
 Test("compression input cap refuses over-budget input", function()
   local payload = string.rep("compressible payload ", 40)
   local dictionary_string = "the quick brown fox jumps over the lazy dog"
