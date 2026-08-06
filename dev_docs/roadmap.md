@@ -775,10 +775,13 @@ Collected because each one has cost time at least once.
   `*.lua` and prettier over `*.md` and `*.yml`, each followed by
   `git diff --exit-code`. Run `tools/format_lua.sh` and `tools/format_doc.sh`
   before pushing.
-- **Prettier rewrites line endings on Windows.** A run touches every Markdown
-  and YAML file in the tree while changing the content of almost none. Check
-  `git diff --stat`, which normalises, rather than `git status`, and stage the
-  intended files explicitly instead of `git add -A`.
+- **Prettier rewriting line endings on Windows — fixed.** `.gitattributes` now
+  carries `*.md text eol=lf` and `*.yml text eol=lf`, so a checkout gives those
+  files the LF endings prettier writes and `tools/format_doc.sh` no longer
+  touches every Markdown and YAML file in the tree on every run. Before that,
+  cleaning up the churn it produced cost a working tree once. If it ever
+  returns, the tell is unchanged: `git diff --stat` normalises and `git status`
+  does not, so trust the former.
 - **`tests/Test.lua` needs luaunit and the reference binaries.** See
   `dev_docs/toolchain.md`. Without freshly built `puff` and `zdeflate` the
   suite reports a large number of failures that have nothing to do with the

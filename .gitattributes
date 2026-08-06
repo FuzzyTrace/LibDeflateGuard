@@ -2,3 +2,10 @@
 # core.autocrlf=true gives the shell scripts CRLF endings, and every script in
 # tools/ then dies with "$'\r': command not found" before it runs anything.
 *.sh text eol=lf
+
+# prettier writes LF, so without this a checkout with core.autocrlf=true gives
+# every Markdown and YAML file CRLF endings and tools/format_doc.sh then
+# rewrites the line endings of the whole tree on every run. Cleaning up that
+# churn has cost real work at least once.
+*.md text eol=lf
+*.yml text eol=lf
