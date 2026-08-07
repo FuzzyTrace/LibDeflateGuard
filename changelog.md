@@ -1,3 +1,88 @@
+### LibDeflateGuard unreleased
+
+- **Fixed.** A write to a shipped limit table carried into a policy a caller
+  derived from it. `LIMIT_PRESETS` and `DEFAULT_LIMITS` are copies of the
+  private tables, so a write to one never reached the module's own default
+  path — but `README.md` documents
+  `WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)`, and that read returned
+  whatever a consumer had written to the copy by then:
+
+  ```lua
+  LibDeflateGuard.LIMIT_PRESETS.generous.max_output_bytes = 4096
+  local guard =
+    LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+  -- before: the instance enforced 4096. Now: 8 MiB.
+  ```
+
+  It loosened as readily as it tightened: the same write could hand an `addon`
+  instance a 512 MB output cap, which is the direction that matters for a fork
+  whose reason to exist is bounding a decode. The same read through the
+  `limits` parameter of the decompressors carried it too.
+
+  Each exported limit table is now registered against the private table it
+  names, and the policy validator resolves a registered table from that private
+  source rather than from the table's own contents. Copying the table on the
+  way in was never the fix — `WithPolicy` already copied — because the values
+  were already wrong when they were read.
+
+- **Added.** The decompressors and `WithPolicy` accept a preset _name_ in place
+  of a policy table: `"addon"` or `"generous"`, the vocabulary the command
+  line's `--limits` already uses.
+
+  ```lua
+  local guard = LibDeflateGuard.WithPolicy("generous")
+  local output = LibDeflateGuard:DecompressDeflate(compressed, "addon")
+  ```
+
+  This is now the recommended shape, and it is a stronger guarantee than the
+  fix above rather than a convenience. Identity anchors a table this module
+  handed out; it cannot anchor one a consumer put in its place, so
+  `LIMIT_PRESETS.generous = {max_output_bytes = 4096}` still yields a table
+  indistinguishable from a policy the caller wrote. A string is not mutable and
+  resolves against nothing a consumer can reach. An unrecognised name is an
+  invalid policy, reported as `ERRORS.INVALID_ARGUMENT` the way every other
+  invalid policy is.
+
+- **Changed, and it can break you.** Writing to `LIMIT_PRESETS.addon`,
+  `LIMIT_PRESETS.generous` or `DEFAULT_LIMITS` no longer customises anything.
+  Before this release those writes were honoured by any policy built from the
+  table afterwards, which is the defect; if you were using one deliberately as
+  a way to raise a cap, copy the entry and write to the copy instead, which has
+  always been the documented shape and is unchanged:
+
+  ```lua
+  local policy = {}
+  for key, value in pairs(LibDeflateGuard.LIMIT_PRESETS.generous) do
+    policy[key] = value
+  end
+  policy.max_output_bytes = 4096
+  local guard = LibDeflateGuard.WithPolicy(policy)
+  ```
+
+  A key the module has no meaning for is no longer a policy error when it is
+  written onto a shipped table either — the contents are not read at all, so
+  nothing written there can be rejected any more than it can be enforced.
+  `LIMIT_PRESETS.generous.unknown_key = 1` used to make the next
+  `WithPolicy(LIMIT_PRESETS.generous)` return `invalid_argument`. A caller's own
+  table is validated exactly as before.
+
+  What deliberately does not change is everything else about those tables. They
+  are still ordinary tables with real fields: `pairs()` and `next()` enumerate
+  them, `LIMIT_PRESETS.generous == LIMIT_PRESETS.generous`, and a preset still
+  works as a table key. Handing out a fresh copy per access — the other
+  candidate fix — would have broken all three, silently, since Lua 5.1 and
+  LuaJIT have no `__pairs` to soften it. This module's own suite iterates these
+  tables in three places.
+
+  `ERRORS` and `DEFAULT_CODEC_LIMITS` are unchanged. Neither is ever handed
+  back to this module as an argument, so identity has nothing to anchor:
+  `DEFAULT_CODEC_LIMITS` carries scalars a caller reads out and passes as a
+  number, and the shape that resolves privately is to omit the cap, or to use a
+  `WithPolicy` instance, whose codec decoders take none.
+
+- **No decode output changes.** The differential harness reports zero
+  divergences against v1.2.1 over 13246 compared calls.
+
 ### LibDeflateGuard v1.2.1
 
 - **Fixed.** The World of Warcraft channel codecs were built by reading

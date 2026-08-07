@@ -1084,6 +1084,149 @@ Test("dynamic header flood is charged exactly and refused by default",
               "exactly max_blocks must decode")
 end)
 
+-- Item H. LIMIT_PRESETS and DEFAULT_LIMITS are copies of the private limit
+-- tables, so writing to one cannot reach the module's own default path -- the
+-- tests above pin that. What it did reach was a policy a caller derives from
+-- one, because README documents WithPolicy(LIMIT_PRESETS.generous) and that
+-- read returned whatever a consumer had written by then. Each exported table
+-- is now registered against the private table it names, and a registered
+-- table resolves to that private source rather than to its own contents.
+--
+-- These poison a module and never put it back, so they build fresh instances
+-- with FreshGuard rather than writing to the suite-level Guard.
+Test("a mutated preset cannot loosen a derived policy", function()
+  local G = FreshGuard()
+  local hostile = MatchBomb(4096)
+  local hostile_output = 1 + 258 * 4096
+  assert(#hostile < G.LIMIT_PRESETS.addon.max_input_bytes,
+         "the bomb must clear the input cap to be a real test")
+  assert(hostile_output > G.LIMIT_PRESETS.addon.max_output_bytes,
+         "the bomb must exceed the addon output cap")
+
+  -- One line, from any other addon in the state, handing an addon-preset
+  -- instance a 512 MB output cap. This is the direction that matters.
+  G.LIMIT_PRESETS.addon.max_output_bytes = 512 * 1024 * 1024
+  local guard = assert(G.WithPolicy(G.LIMIT_PRESETS.addon))
+  AssertEqual(guard:GetPolicy().max_output_bytes, 512 * 1024,
+              "instance policy after a loosening write")
+  AssertEqual(select(2, guard:DecompressDeflate(hostile)),
+              G.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "a loosened preset must not decode a bomb")
+
+  -- The same read through the limits parameter, which is the same validator.
+  AssertEqual(select(2, G:DecompressDeflate(hostile, G.LIMIT_PRESETS.addon)),
+              G.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "limits parameter after a loosening write")
+
+  -- DEFAULT_LIMITS is the same class of object and carries the same anchor.
+  G.DEFAULT_LIMITS.max_output_bytes = 512 * 1024 * 1024
+  AssertEqual(select(2, G:DecompressDeflate(hostile, G.DEFAULT_LIMITS)),
+              G.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "DEFAULT_LIMITS after a loosening write")
+end)
+
+Test("a mutated preset cannot tighten a derived policy", function()
+  local G = FreshGuard()
+  local fixed = FromHex("330400")
+  local generous_output = G.LIMIT_PRESETS.generous.max_output_bytes
+  local addon_input = G.LIMIT_PRESETS.addon.max_input_bytes
+
+  -- The reproduction from dev_docs/roadmap.md, item H, verbatim.
+  G.LIMIT_PRESETS.generous.max_output_bytes = 4096
+  local guard = assert(G.WithPolicy(G.LIMIT_PRESETS.generous))
+  AssertEqual(guard:GetPolicy().max_output_bytes, generous_output,
+              "instance policy after a tightening write")
+
+  G.LIMIT_PRESETS.addon.max_input_bytes = 1
+  AssertEqual(G:DecompressDeflate(fixed, G.LIMIT_PRESETS.addon), "1",
+              "limits parameter after a tightening write")
+  AssertEqual(
+    assert(G.WithPolicy(G.LIMIT_PRESETS.addon)):GetPolicy().max_input_bytes,
+    addon_input, "instance input cap after a tightening write")
+
+  G.DEFAULT_LIMITS.max_input_bytes = 1
+  AssertEqual(G:DecompressDeflate(fixed, G.DEFAULT_LIMITS), "1",
+              "DEFAULT_LIMITS after a tightening write")
+
+  -- A key this module has no meaning for is not a policy error either. The
+  -- exported table's contents are not read at all, so nothing written to it
+  -- can be rejected, any more than it can be enforced.
+  G.LIMIT_PRESETS.generous.unknown_key = 1
+  assert(G.WithPolicy(G.LIMIT_PRESETS.generous),
+         "an exported preset stays a valid policy however it is written to")
+end)
+
+Test("exported limit tables stay ordinary tables", function()
+  -- The alternative fix -- a fresh copy per access behind __index -- would
+  -- have broken every assertion below, silently: pairs() over an empty proxy
+  -- yields nothing, and Lua 5.1 and LuaJIT have no __pairs to soften it.
+  -- tests/FuzzTest.lua and the "limit presets" test above both iterate these.
+  assert(Guard.LIMIT_PRESETS.addon == Guard.LIMIT_PRESETS.addon,
+         "a preset must be one table, not a copy per access")
+  local by_table = {[Guard.LIMIT_PRESETS.generous] = "generous"}
+  AssertEqual(by_table[Guard.LIMIT_PRESETS.generous], "generous",
+              "a preset must still work as a table key")
+  assert(next(Guard.LIMIT_PRESETS) ~= nil, "LIMIT_PRESETS must be iterable")
+  local names = 0
+  for _ in pairs(Guard.LIMIT_PRESETS) do names = names + 1 end
+  AssertEqual(names, 2, "LIMIT_PRESETS entry count")
+  local keys = 0
+  for _ in pairs(Guard.LIMIT_PRESETS.addon) do keys = keys + 1 end
+  AssertEqual(keys, 5, "preset key count")
+  for _ in pairs(Guard.DEFAULT_LIMITS) do keys = keys - 1 end
+  AssertEqual(keys, 0, "DEFAULT_LIMITS key count")
+  AssertEqual(getmetatable(Guard.LIMIT_PRESETS), nil, "no proxy metatable")
+  AssertEqual(getmetatable(Guard.LIMIT_PRESETS.addon), nil,
+              "no proxy metatable on a preset")
+  assert(Guard.DEFAULT_LIMITS ~= Guard.LIMIT_PRESETS.addon,
+         "DEFAULT_LIMITS and the addon preset stay distinct tables")
+end)
+
+Test("a caller's own copy of a preset still customises", function()
+  -- What the anchor costs, stated as a test: writing to the shipped table no
+  -- longer customises anything, and copying it is how a caller derives a
+  -- policy from a preset.
+  local mine = {}
+  for key, value in pairs(Guard.LIMIT_PRESETS.generous) do mine[key] = value end
+  mine.max_output_bytes = 4096
+  AssertEqual(assert(Guard.WithPolicy(mine)):GetPolicy().max_output_bytes, 4096,
+              "a copy is the caller's table and is enforced as written")
+end)
+
+Test("a preset named by string is beyond a consumer's reach", function()
+  local G = FreshGuard()
+  local fixed = FromHex("330400")
+  local generous_output = G.LIMIT_PRESETS.generous.max_output_bytes
+  local addon_input = G.LIMIT_PRESETS.addon.max_input_bytes
+
+  AssertEqual(assert(G.WithPolicy("generous")):GetPolicy().max_output_bytes,
+              generous_output, "named preset policy")
+  AssertEqual(assert(G:WithPolicy("addon")):GetPolicy().max_input_bytes,
+              addon_input, "named preset, colon call")
+  AssertEqual(G:DecompressDeflate(fixed, "generous"), "1",
+              "named preset as the limits parameter")
+
+  -- An unrecognised name is an invalid policy, reported the way every other
+  -- invalid policy is rather than raised or silently defaulted.
+  AssertEqual(select(2, G:DecompressDeflate(fixed, "none")),
+              G.ERRORS.INVALID_ARGUMENT, "unknown preset name")
+  local instance, code = G.WithPolicy("")
+  AssertEqual(instance, nil, "empty preset name builds no instance")
+  AssertEqual(code, G.ERRORS.INVALID_ARGUMENT, "empty preset name code")
+
+  -- Identity anchors a table this module handed out. It cannot anchor an
+  -- entry a consumer replaced wholesale: that table is indistinguishable from
+  -- a policy the caller wrote, and is enforced as written. That is the
+  -- boundary the name shape steps around, pinned here so a later change does
+  -- not move it quietly.
+  G.LIMIT_PRESETS = {generous = {max_output_bytes = 4096}}
+  AssertEqual(
+    assert(G.WithPolicy(G.LIMIT_PRESETS.generous)):GetPolicy().max_output_bytes,
+    4096, "a substituted entry is a caller policy, not a preset")
+  AssertEqual(assert(G.WithPolicy("generous")):GetPolicy().max_output_bytes,
+              generous_output, "a name resolves past a substituted table")
+end)
+
 _G.LibStub = original_libstub
 _G.LibDeflate = original_libdeflate
 _G.LibDeflateGuard = original_libdeflateguard

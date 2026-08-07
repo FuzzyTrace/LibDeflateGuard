@@ -97,8 +97,10 @@ do
 end
 
 -- Every failure path reads this private table. LibDeflateGuard.ERRORS below
--- is an inspection copy, like DEFAULT_LIMITS and LIMIT_PRESETS: a consumer
--- that writes to the public table cannot change the code a decode returns.
+-- is an inspection copy: a consumer that writes to the public table cannot
+-- change the code a decode returns. Unlike DEFAULT_LIMITS and LIMIT_PRESETS
+-- it is never handed back to this module as an argument, so it needs no
+-- registration in _canonical_decompress_limits.
 local _ERRORS = {
   INVALID_ARGUMENT = "invalid_argument",
   INPUT_LIMIT_EXCEEDED = "input_limit_exceeded",
@@ -153,13 +155,45 @@ local function CopyLimits(limits)
   }
 end
 
--- Inspection copies. Mutating them does not alter the private tables the
--- decoder enforces.
+-- The exported limit tables are names for module constants, not caller-owned
+-- tables. Each one is registered here against the private table it names, and
+-- ResolveDecompressLimits resolves a registered table from that private source
+-- rather than from whatever the exported table happens to hold by the time a
+-- caller reads it. So a consumer that writes to LIMIT_PRESETS.generous cannot
+-- change what LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+-- enforces, in either direction.
+--
+-- Anchoring on identity rather than handing out a fresh copy per access is
+-- what keeps the exported tables ordinary tables: pairs(), next(), table
+-- identity and use as a table key all behave exactly as before. Per-access
+-- copies would have broken all four, and Lua 5.1 and LuaJIT have no __pairs
+-- to paper over an empty proxy table.
+--
+-- What identity cannot anchor is the entry itself: replacing
+-- LIMIT_PRESETS.generous with a different table, or replacing LIMIT_PRESETS,
+-- yields an unregistered table that is indistinguishable from a policy the
+-- caller wrote. Name the preset instead. A string is not mutable, so
+-- _named_decompress_limits below resolves against nothing a consumer can reach.
+local _canonical_decompress_limits = {}
+
+local function ExportLimits(source)
+  local exported = CopyLimits(source)
+  _canonical_decompress_limits[exported] = source
+  return exported
+end
+
 LibDeflateGuard.LIMIT_PRESETS = {
-  addon = CopyLimits(_addon_decompress_limits),
-  generous = CopyLimits(_generous_decompress_limits)
+  addon = ExportLimits(_addon_decompress_limits),
+  generous = ExportLimits(_generous_decompress_limits)
 }
-LibDeflateGuard.DEFAULT_LIMITS = CopyLimits(_default_decompress_limits)
+LibDeflateGuard.DEFAULT_LIMITS = ExportLimits(_default_decompress_limits)
+
+-- The preset names the decompressors and WithPolicy accept in place of a
+-- policy table. Same vocabulary the command line's "--limits" already uses.
+local _named_decompress_limits = {
+  addon = _addon_decompress_limits,
+  generous = _generous_decompress_limits
+}
 
 -- A codec decode exists to feed a decompress, so its cap is derived from the
 -- decompress input cap rather than guessed. The print codec emits 0.75 bytes
@@ -171,6 +205,11 @@ local _default_print_input_bytes = math.floor(
                                      _default_decompress_limits.max_input_bytes *
                                        4 / 3)
 local _default_codec_input_bytes = _default_decompress_limits.max_input_bytes
+-- Not registered against a private source the way the limit tables above are,
+-- because the codec decoders take a number and not this table. Identity can
+-- anchor a table a caller hands back; it cannot anchor a scalar a caller read
+-- out of one. Omitting the cap is the shape that resolves privately, and a
+-- WithPolicy instance's codec decoders take no cap at all.
 LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
   print_max_input_bytes = _default_print_input_bytes,
   channel_max_input_bytes = _default_codec_input_bytes
@@ -2235,7 +2274,15 @@ local function ResolveDecompressLimits(limits)
     -- shared instead of copied on every call.
     return _default_decompress_limits
   end
+  -- A preset named by string, and a limit table this module exported, both
+  -- resolve to the private constant rather than to anything a consumer may
+  -- have written since. An unknown name is nil, which every caller of this
+  -- function already reports as invalid_argument. See the registry note above
+  -- LIMIT_PRESETS.
+  if type(limits) == "string" then return _named_decompress_limits[limits] end
   if type(limits) ~= "table" then return nil end
+  local canonical = _canonical_decompress_limits[limits]
+  if canonical then return canonical end
 
   local resolved = {}
   for key, default_value in pairs(_default_decompress_limits) do
@@ -3819,8 +3866,9 @@ end
 -- "limits" parameter uses, and the resolved numbers are held in an upvalue
 -- rather than in a field. Mutating the table passed to this function
 -- afterwards, or writing to the returned instance, cannot change what the
--- instance enforces. That is the property LIMIT_PRESETS and DEFAULT_LIMITS
--- already have.
+-- instance enforces. Nor can mutating a LIMIT_PRESETS entry before the call:
+-- an exported limit table resolves to the private constant it names rather
+-- than to its own current contents.
 --
 -- Encoders, CreateDictionary and Adler32 are exposed on the instance
 -- unchanged. They are not budgeted: an encoder's input is the caller's own
@@ -3829,16 +3877,17 @@ end
 -- new error path to functions that have none. They are present so that a
 -- whole pipeline can be written against the instance.
 --
--- @param policy [table/nil] A LIMIT_PRESETS entry, a partial table of limit
--- keys, or nil for the defaults. Exactly what the "limits" parameter of the
--- decompressors accepts.
+-- @param policy [string/table/nil] A preset name, "addon" or "generous"; a
+-- LIMIT_PRESETS entry; a partial table of limit keys; or nil for the defaults.
+-- Exactly what the "limits" parameter of the decompressors accepts. A name is
+-- the shape nothing written to the module table can alter, and is preferred
+-- for that reason. An unrecognised name is an invalid policy.
 -- @return [table/nil] The policy instance, or nil if the policy is invalid.
 -- @return [nil/string] LibDeflateGuard.ERRORS.INVALID_ARGUMENT if the policy
 -- is invalid. An invalid policy is reported rather than raised, so that the
 -- same code that reads a policy out of saved variables can check it.
 -- @usage
--- local guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS
---                                            .generous)
+-- local guard = LibDeflateGuard.WithPolicy("generous")
 -- local payload, decode_error = guard:DecodeForPrint(pasted)
 function LibDeflateGuard.WithPolicy(policy, policy_if_called_with_a_colon)
   -- Documented as a dot call, but the rest of this module is colon-called, so
