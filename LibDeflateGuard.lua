@@ -3378,8 +3378,14 @@ end
 
 local _addon_channel_codec
 
+-- Built through the private constructor rather than through
+-- LibDeflateGuard:CreateCodec. The channel codecs are cached lazily, so a read
+-- of the public module table here would happen at first use, which is after a
+-- consumer has had the chance to write to it. LibDeflateGuard:CreateCodec adds
+-- only a type check over three string literals and passes exactly this cap, so
+-- the codec built here is identical to the one that call would return.
 local function GenerateWoWAddonChannelCodec()
-  return LibDeflateGuard:CreateCodec("\000", "\001", "")
+  return CreateCodecInternal("\000", "\001", "", _default_codec_input_bytes)
 end
 
 --- Encode the string to make it ready to be transmitted in World of
@@ -3446,7 +3452,9 @@ local function GenerateWoWChatChannelCodec()
   for i = 128, 255 do r[#r + 1] = _byte_to_char[i] end
 
   local reserved_chars = "sS\000\010\013\124%" .. table_concat(r)
-  return LibDeflateGuard:CreateCodec(reserved_chars, "\029\031", "\015\020")
+  -- Private constructor, for the reason given above GenerateWoWAddonChannelCodec.
+  return CreateCodecInternal(reserved_chars, "\029\031", "\015\020",
+                             _default_codec_input_bytes)
 end
 
 local _chat_channel_codec

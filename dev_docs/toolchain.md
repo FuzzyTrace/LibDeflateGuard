@@ -23,6 +23,7 @@ eight minutes under LuaJIT.
 | ------------------------------ | ---------------------------------------------------- |
 | Reference compressors, C rocks | A C compiler and make                                |
 | `tests/Test.lua`               | zlib, `puff`, `zdeflate`, luaunit                    |
+| `tests/BenchTest.lua`          | Nothing; a reference module is optional              |
 | `tools/lint_lua_code.sh`       | luacheck, which needs luafilesystem and a C compiler |
 | `tools/format_lua.sh`          | LuaFormatter                                         |
 | `tools/format_doc.sh`          | prettier                                             |
@@ -99,6 +100,98 @@ lua tests/Test.lua --verbose --shuffle
 luacheck -g -u .
 tools/format_all.sh && git diff --exit-code
 ```
+
+## Benchmarking against a reference module
+
+`tests/BenchTest.lua` needs no reference programs, no rocks and no C
+toolchain. Run alone it prints absolute numbers for the six migration-relevant
+decode paths and for the four saturation shapes that size a policy:
+
+```sh
+luajit -joff tests/BenchTest.lua
+```
+
+Point `LIBDEFLATEGUARD_BENCH_REFERENCE` at another module to get a comparison
+table. It accepts either an upstream `LibDeflate.lua` or an older
+`LibDeflateGuard.lua` and adapts the call shape to whichever it is, so the
+same command answers both "what did this fork cost against upstream" and "did
+this branch regress against the last release":
+
+```sh
+git worktree add ../upstream-baseline afc3b78d12fb3bcfa6b21e5332031ad3d7572e19
+LIBDEFLATEGUARD_BENCH_REFERENCE=../upstream-baseline/LibDeflate.lua \
+  luajit tests/BenchTest.lua
+```
+
+Three environment variables configure it, named to match the ones
+`tests/FuzzTest.lua` already uses:
+
+| Variable                          | Default | Meaning                          |
+| --------------------------------- | ------- | -------------------------------- |
+| `LIBDEFLATEGUARD_BENCH_REFERENCE` | unset   | Reference module to compare with |
+| `LIBDEFLATEGUARD_BENCH_ROUNDS`    | 21      | Alternated A/B rounds per shape  |
+| `LIBDEFLATEGUARD_BENCH_SEED`      | 1234    | Corpus seed                      |
+
+The reference is loaded with `dofile` and has to return a table. The harness
+dispatches on its `_NAME` rather than passing an older module arguments
+upstream would read as something else, which is the footgun the v1.1.2 fix was
+about. Unset or empty, it benchmarks this module alone and prints absolute
+numbers, which is all the saturation shapes need.
+
+The reported figure for each shape is the median of the rounds, with the
+spread printed beside it. Rounds must be a whole number of at least three,
+which is the floor for that spread to describe anything.
+
+The seed must be a whole number below 2147483647, and the harness exits 1
+rather than run anything if it is not: a seed outside that range means one
+value under LuaJIT's doubles and another under 5.4's integers, and a published
+number has to come from a corpus that is byte for byte the same everywhere.
+The generator is the private MINSTD `tests/FuzzTest.lua` uses, and the harness
+checks it against fixed draws before building any corpus rather than assuming
+it.
+
+Use `luajit -joff` for any number that goes into a document. It is the World
+of Warcraft interpreter proxy every figure this repository has published was
+taken on, and it is also far more repeatable: with the JIT on, two modules
+this similar share one trace cache and a delta moves further between runs than
+the spread the harness reports within a run. The harness prints that warning
+itself when it finds the JIT on, and prints the interpreter and `jit.status()`
+either way, so a pasted result carries the conditions it was taken under.
+
+### Reading the output
+
+Every timing figure is a median, with a `spread` beside it. The spread is half
+the p10 to p90 band of the samples, as a fraction of the median. Deciles
+rather than max minus min, because a plain range is one outlier wide — a
+single collection or a scheduling hiccup sets it — and would declare every
+result unmeasurable.
+
+Which samples those are depends on the mode. Run alone, the spread is the
+spread of the round times themselves, which is what an absolute number is
+reproducible to on this machine. Run against a reference, the delta is the
+median of the per-round ratios rather than the ratio of the two medians, and
+the spread printed beside it is that paired ratio's own spread, not either
+module's. Dividing inside a round cancels load common to both modules, so it
+is a tighter and more honest floor for a comparison than either module's
+absolute spread, which is dominated by whatever else the machine is doing.
+
+Printing that floor is the point. A delta smaller than its own spread is the
+floor talking rather than the code, and the harness says so in words: every
+such row gets a `#` line under the table naming it and telling you to report
+it as about flat. A row missing from those notes is one whose delta cleared
+its spread on that run. Do not quote a figure for a row that did not.
+
+`alloc/call` is bytes allocated per call, measured with the collector stopped
+so that nothing is reclaimed mid-call. It therefore counts what the call threw
+away as well as what it kept, and it is not peak heap — peak heap cannot be
+sampled from inside Lua without instrumenting the module. What it does bound
+is how much one call can add to the heap. It is the reproducible half of the
+pair: allocation figures repeat exactly across runs on which the timings move.
+In comparison mode it gets its own table rather than a column.
+
+Nothing in it fails on a timing result, however bad. The byte-identical
+cross-checks run before any timing and are the only thing that can fail the
+run.
 
 ## Windows quirks worth knowing
 

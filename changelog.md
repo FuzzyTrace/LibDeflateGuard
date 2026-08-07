@@ -1,3 +1,141 @@
+### LibDeflateGuard unreleased
+
+- **Fixed.** The World of Warcraft channel codecs were built by reading
+  `LibDeflateGuard:CreateCodec` back off the public module table. Both codecs
+  are cached lazily, so that read happened at first use — after any consumer
+  had had the chance to write to the table — and a replaced `CreateCodec`
+  therefore chose the codec every subsequent
+  `EncodeForWoWAddonChannel`/`DecodeForWoWAddonChannel` and
+  `EncodeForWoWChatChannel`/`DecodeForWoWChatChannel` call ran through. The
+  `type(codec.Decode) ~= "function"` check in the channel decoders does not
+  close this: a substituted codec satisfies it, because that check guards
+  against a broken codec rather than a chosen one. `InternalClearCache` nils
+  both cached codecs and is public, so the window re-opened on demand even
+  after first use. Both generators now call the private constructor, which
+  they already had in scope.
+
+  This completes the v1.1.2 hardening rather than adding a new one. That
+  release bound `_Adler32` privately and made `ERRORS` an inspection copy, on
+  the grounds that anything holding the module could otherwise have replaced
+  the checksum check; the same seam was still open one layer down.
+
+  **No decode output changes.** `LibDeflateGuard:CreateCodec` adds only a type
+  check over three string literals and passes exactly the same cap, so the
+  constructed codecs are identical, and the differential harness reports zero
+  divergences against v1.2.0.
+
+  A codec returned by a caller's own `CreateCodec` call is untouched and can
+  still be reshaped: that object is the caller's. The regression test pins that
+  boundary explicitly, alongside the cold-cache and cleared-cache cases, and it
+  now poisons both halves of the substituted codec. The encoder side of this
+  defect was described above and was covered by nothing: a replaced
+  `CreateCodec` chose the codec `EncodeForWoWAddonChannel` emitted bytes
+  through as surely as the one its decoder read them back with, and a tampered
+  message going out is the same fault as a tampered message coming in. The test
+  asserts the poisoned module emits the same bytes an untampered one does.
+
+- **Added.** `tests/BenchTest.lua`, the benchmark harness behind the new
+  `## Performance` section. It compares this module against a reference — an
+  upstream `LibDeflate.lua` or any older `LibDeflateGuard.lua` back to v1.0.0 —
+  over six migration-relevant decode paths, and measures the four saturation
+  shapes that size a policy with no reference at all. It reports the median of
+  alternated rounds with the spread beside it, cross-checks byte-identical
+  output before timing anything, and never fails on a timing result. Two
+  properties are worth naming because each cost a measurement to learn:
+  supporting a reference that predates `LIMIT_PRESETS` means resolving the
+  preset numbers from a literal table and passing a codec input cap only to a
+  reference whose decoders take one, and reporting allocation means a median of
+  several samples rather than one, because a single `collectgarbage("count")`
+  pair moved by up to a kilobyte on a 5.5 KB figure. Medianed, the allocation
+  column reproduces to the byte across ten runs.
+
+- **Documented.** `README.md` gains a `## Performance` section. This fork had
+  published no performance claim of any kind — not a false one, none at all —
+  while the measurements that did exist were scattered across this changelog
+  and `dev_docs/roadmap.md`, taken by hand, and not reproducible by a reader.
+  Every figure in the new section is regenerated with `tests/BenchTest.lua`
+  under `luajit -joff`, and the section gives the command, the machine, and the
+  ten-run range behind each published number. Ten rather than three, because
+  the evidence column exists so that a reader who regenerates the table can
+  check it, and a range built from three runs of a comparison whose own spread
+  reaches ±27% is narrower than re-running actually is.
+
+  Measuring changed two of the answers. Against upstream at `afc3b78`, stored
+  blocks decode about 40% faster and `DecodeForWoWAddonChannel` about 50%
+  slower, both well clear of the measurement floor. The other four paths —
+  compressible text, `DecodeForWoWChatChannel`, `DecodeForPrint`, and the small
+  round trip — are reported as about flat, because the difference the harness
+  found on each is smaller than the harness's own spread for that comparison. A
+  hand figure of "+20%" for `DecodeForWoWChatChannel`, carried in the roadmap
+  from a different corpus, is not reproducible: it measures 11 to 17% across
+  those ten runs and cleared its spread on none of them. Three rows read
+  positive on every run and rarely clear their spread — compressible text at 4
+  to 6%, `DecodeForWoWChatChannel` at 11 to 17%, and the small round trip at 8
+  to 11% — and the section says so in prose rather than leaving "about flat" to
+  carry a meaning it does not have. The section also states which call shape
+  the deflate rows measured, since the harness passes an explicit policy table
+  on every decompress call and upstream has no analogue for that argument.
+  Measured paired inside one process, the argument costs a point or two at most
+  on the 8 KB member — two runs gave +0.00% and +1.80%, neither separable from
+  zero — and +0.44% on a 256 B one, so it inflates no row.
+
+- **Documented.** `README.md` gains a `## Migrating from LibDeflate` section.
+  Nothing in it is new behaviour. All of it was already stated somewhere in the
+  file, and all of it fails at run time rather than at load time: the refusal of
+  `Decompress(Compress(x))` on the module, the 64 KiB/512 KiB default budget, the
+  non-throwing decoders, the single-valued encoders, the compression ceiling a
+  `WithPolicy` instance imposes, the cost of channel decoding, and an arity
+  table for every public entry point.
+
+- **Documented.** `## Security scope` now states what mutation resistance
+  covers after the fix above, what it does not — a `WithPolicy` instance's
+  _methods_ are replaceable, only its policy is sealed, and `internals` is
+  test-only and writable — and the frame it belongs in: defence in depth
+  against accident and against a library that reaches too far, not a boundary
+  against an addon already inside the same Lua state. It also states the
+  millisecond consequence of the budgets, which previously lived only in
+  `dev_docs/roadmap.md`: 10 to 15 ms for the worst call `addon` accepts,
+  against a 16.7 ms frame at 60 fps, which is inside a frame by about 1.7 ms on
+  the machine named and by less than that on the client, whose interpreter is
+  slower; 155 to 238 ms for `generous`, which is not frame-safe; and a
+  message flood is still the caller's problem. Every millisecond figure is the
+  highest median of ten runs rounded up, because a worst case that rounds down
+  is not a worst case. The intro paragraph now scopes
+  "security-hardened" to what it means here in the same sentence that claims it.
+
+- **Corrected.** The `## Security scope` bullet on mutation resistance said
+  that mutating `ERRORS`, `DEFAULT_LIMITS` and `LIMIT_PRESETS` "changes nothing
+  the decoder enforces". That is true of the module's own default path and
+  false of a policy derived from a preset. `LIMIT_PRESETS` is a copy made once
+  at load time and hung on the public module table, and
+  `## Migrating from LibDeflate` tells a caller to pass an entry from it
+  straight to `WithPolicy`, so
+  `LIMIT_PRESETS.generous.max_output_bytes = 4096` followed by
+  `WithPolicy(LIMIT_PRESETS.generous)` yields an instance enforcing 4096 rather
+  than 8 MiB — and the same write can equally hand an `addon` instance a 512 MB
+  cap. The bullet now says exactly what the copy does and does not stop, and
+  the limit is listed under what mutation resistance does not cover. No code
+  changed: making the presets per-access copies would break table identity, so
+  `LIMIT_PRESETS.generous ~= LIMIT_PRESETS.generous`, and that trade-off is
+  filed as item H in `dev_docs/roadmap.md` rather than spent here. It is the
+  same shape as the channel-codec seam fixed above, with the caller rather than
+  the module performing the read off the public table.
+
+- **Corrected.** The README stated that peak heap during a decode is "roughly 3
+  to 4 times the decoded size" and that the `generous` 8 MiB output cap
+  therefore implies a transient peak of 26 to 32 MiB. The multiplier does not
+  hold at that size, because the 32768-byte sliding window is a fixed cost that
+  shrinks as a share of a larger decode. Measured, a `generous` decode saturating
+  its output cap allocates 16.4 to 24.6 MB in total, which bounds its peak from
+  above and is below the figure previously published as the peak. The paragraph
+  now gives measured allocation at both caps and says what it is.
+
+- **Documented.** `docs/benchmark.md` carries a header saying what it is:
+  inherited upstream material comparing upstream LibDeflate with LibCompress on
+  a 2019 machine, describing neither this fork nor the code a reader is running.
+  It is not regenerated — that needs LibCompress and a corpus this repository
+  does not carry — and it now points at the new README section instead.
+
 ### LibDeflateGuard v1.2.0
 
 - **Added.** `LibDeflateGuard.WithPolicy(policy)` returns an object bound to
@@ -167,16 +305,24 @@
 
 - Reduced decode-path overhead. Raw Deflate decoding is about 10 per cent
   faster and zlib about 13 per cent, stored blocks about a third faster, and
-  World of Warcraft addon-channel decoding about twice as fast. A sweep of many
-  small messages also allocates far less, because a guarded decode no longer
-  builds a closure and a limits table on every call.
+  World of Warcraft addon-channel decoding about twice as fast. Every one of
+  those figures compares this release with v1.0.0, not with upstream
+  LibDeflate: they are this fork recovering overhead it had itself added, and
+  against upstream the addon-channel path remains materially slower, which is
+  the direct cost of rejecting non-canonical escapes. See the `## Performance`
+  section of `README.md` for the measured comparison against upstream. A sweep
+  of many small messages also allocates far less, because a guarded decode no
+  longer builds a closure and a limits table on every call.
 - No decoder behaviour change. Every limit, error code, and accepted or
   rejected input is the same. The optimised decoder was compared against the
   previous one over hundreds of thousands of calls with no divergence.
 - Documented that `max_output_bytes` bounds the decoded string and not the Lua
   heap, which peaks at roughly three to four times the decoded size. The
   default 8 MiB output cap therefore implies a transient peak nearer 26 to
-  32 MiB.
+  32 MiB. The multiplier holds at the 512 KiB cap; the extrapolation to 8 MiB
+  does not, and a saturating `generous` decode was later measured allocating
+  16.4 to 24.6 MB in total, below the peak given here. See the unreleased
+  entry for the measurement.
 - Added `tests/FuzzTest.lua`, a randomized decode-path suite with
   exact-boundary coverage for every resource limit across stored, fixed, and
   dynamic blocks, and an optional differential mode that compares two copies of

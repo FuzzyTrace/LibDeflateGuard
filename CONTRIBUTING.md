@@ -40,6 +40,39 @@ LIBDEFLATEGUARD_FUZZ_REFERENCE=../libdeflateguard-reference/LibDeflateGuard.lua 
   lua tests/FuzzTest.lua
 ```
 
+### The benchmark harness
+
+Not a workflow, and deliberately so: timing on a shared runner is noise, and
+this repository has already concluded more than once that the measurement
+floor is the result. `tests/BenchTest.lua` is the thing to run by hand when a
+change touches the decode path, next to the differential gate above. The gate
+answers "does it still return the same bytes"; this answers "at what cost".
+
+It needs nothing but an interpreter. Run alone it prints absolute numbers for
+the six migration-relevant decode paths and for the saturation shapes that
+size a policy. Point it at a reference module for a comparison table. It
+accepts either an upstream `LibDeflate.lua` or an older `LibDeflateGuard.lua`,
+and adapts the call shape to whichever it is:
+
+```sh
+git worktree add ../upstream-baseline afc3b78d12fb3bcfa6b21e5332031ad3d7572e19
+LIBDEFLATEGUARD_BENCH_REFERENCE=../upstream-baseline/LibDeflate.lua \
+  luajit tests/BenchTest.lua
+```
+
+Use `luajit -joff` for any figure that goes into a document. That is the
+World of Warcraft interpreter proxy the rest of this repository quotes, and it
+repeats far better than the JIT does on a workload of two near-identical
+modules in one process.
+
+No timing result fails the run, however bad. Only the byte-identical
+cross-checks it makes before timing anything can, so reading the output is the
+whole point of running it — nothing will go red on your behalf. Say in the
+pull request what you ran it against and what moved.
+`dev_docs/toolchain.md` documents the environment variables and how to read
+the table. Revisit the decision not to schedule it only if a regression ships
+that a scheduled run would have caught.
+
 ### The nightly soak
 
 `fuzz_soak` runs `tests/FuzzTest.lua` every night with a raised iteration count
