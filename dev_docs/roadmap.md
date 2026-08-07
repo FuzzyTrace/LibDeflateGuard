@@ -10,7 +10,7 @@ artifact. Tick items off here as they land.
 
 Items A–D were agreed after the v1.1.2 regression fixes. Items E–G were agreed
 after an external review of the whole fork against upstream `afc3b78`, and
-target v1.2.1.
+shipped in v1.2.1.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
