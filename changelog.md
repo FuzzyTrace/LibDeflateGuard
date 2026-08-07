@@ -1,4 +1,4 @@
-### LibDeflateGuard unreleased
+### LibDeflateGuard v1.2.1
 
 - **Fixed.** The World of Warcraft channel codecs were built by reading
   `LibDeflateGuard:CreateCodec` back off the public module table. Both codecs
