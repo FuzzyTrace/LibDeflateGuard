@@ -3897,9 +3897,10 @@ function LibDeflateGuard.WithPolicy(policy, policy_if_called_with_a_colon)
 
   local resolved = ResolveDecompressLimits(policy)
   if not resolved then return nil, _ERRORS.INVALID_ARGUMENT end
-  -- ResolveDecompressLimits hands back the shared private defaults table when
-  -- the policy is nil, and a fresh table otherwise. Copy either way, so the
-  -- instance can never alias the module defaults or the caller's table.
+  -- ResolveDecompressLimits hands back a shared private table for three of the
+  -- four policy shapes -- nil, a preset name, and a registered limit table --
+  -- and a fresh table only for a caller's own. Copy every way, so the instance
+  -- can never alias a module constant or the caller's table.
   local limits = CopyLimits(resolved)
 
   local print_cap = math_floor(limits.max_input_bytes * 4 / 3)

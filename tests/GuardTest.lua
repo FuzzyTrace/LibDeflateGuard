@@ -1184,8 +1184,11 @@ end)
 
 Test("a caller's own copy of a preset still customises", function()
   -- What the anchor costs, stated as a test: writing to the shipped table no
-  -- longer customises anything, and copying it is how a caller derives a
-  -- policy from a preset.
+  -- longer customises anything, and a table of the caller's own is enforced
+  -- exactly as written. This is also the benign face of what identity cannot
+  -- anchor -- a hand-rolled pairs() copy of a poisoned entry is enforced the
+  -- same way, because it is a caller's table. The test below pins the
+  -- derivation shape README recommends instead.
   local mine = {}
   for key, value in pairs(Guard.LIMIT_PRESETS.generous) do mine[key] = value end
   mine.max_output_bytes = 4096
@@ -1225,6 +1228,67 @@ Test("a preset named by string is beyond a consumer's reach", function()
     4096, "a substituted entry is a caller policy, not a preset")
   AssertEqual(assert(G.WithPolicy("generous")):GetPolicy().max_output_bytes,
               generous_output, "a name resolves past a substituted table")
+
+  -- A substituted entry is not always merely unrecognised. Point one preset at
+  -- another and the table there is registered, so it resolves canonically --
+  -- to the wrong preset's private numbers. Same class, same answer, worth
+  -- pinning because the failure looks like a success.
+  local H = FreshGuard()
+  local addon_output = H.LIMIT_PRESETS.addon.max_output_bytes
+  H.LIMIT_PRESETS.addon = H.LIMIT_PRESETS.generous
+  AssertEqual(
+    assert(H.WithPolicy(H.LIMIT_PRESETS.addon)):GetPolicy().max_output_bytes,
+    generous_output,
+    "a preset substituted with another preset resolves to that one")
+  AssertEqual(assert(H.WithPolicy("addon")):GetPolicy().max_output_bytes,
+              addon_output, "a name resolves past a substituted preset")
+end)
+
+Test("the recommended derivation starts from the private numbers", function()
+  -- README's ## Safe decoding derives a policy from
+  -- WithPolicy(name):GetPolicy() rather than from a pairs() copy of a shipped
+  -- table. Identity anchors a table handed back, not values already read out
+  -- of one, so the copy has to be made from something no consumer can write
+  -- to, and GetPolicy() is that: the private numbers a name resolved to.
+  local G = FreshGuard()
+  local bomb = MatchBomb(4096)
+  local bomb_output = 1 + 258 * 4096
+  local addon_input = G.LIMIT_PRESETS.addon.max_input_bytes
+  local addon_output = G.LIMIT_PRESETS.addon.max_output_bytes
+  assert(#bomb < addon_input, "the bomb must clear the addon input cap")
+  assert(bomb_output > addon_output, "the bomb must exceed the addon output cap")
+
+  -- Poisoned both ways at once: the entry is written through to loosen the
+  -- output cap and to tighten the input cap, and then replaced wholesale --
+  -- the one substitution identity cannot anchor.
+  G.LIMIT_PRESETS.addon.max_output_bytes = 512 * 1024 * 1024
+  G.LIMIT_PRESETS.addon.max_input_bytes = 1
+  G.LIMIT_PRESETS.addon = {
+    max_output_bytes = 512 * 1024 * 1024,
+    max_input_bytes = 1
+  }
+
+  local policy = assert(G.WithPolicy("addon")):GetPolicy()
+  AssertEqual(policy.max_output_bytes, addon_output,
+              "derived output cap under a poisoned entry")
+  AssertEqual(policy.max_input_bytes, addon_input,
+              "derived input cap under a poisoned entry")
+
+  -- What a policy built from it enforces, which is the assertion that matters:
+  -- a laundered 512 MB output cap decodes the bomb, and a laundered input cap
+  -- of 1 rejects the three-byte fixed block.
+  local derived = assert(G.WithPolicy(policy))
+  AssertEqual(select(2, derived:DecompressDeflate(bomb)),
+              G.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "a derived policy enforces the private output cap")
+  AssertEqual(derived:DecompressDeflate(FromHex("330400")), "1",
+              "a derived policy enforces the private input cap")
+
+  -- And it is a real derivation rather than an inert one: the caller's own
+  -- write to the copy is enforced.
+  policy.max_output_bytes = bomb_output
+  local raised = assert(assert(G.WithPolicy(policy)):DecompressDeflate(bomb))
+  AssertEqual(#raised, bomb_output, "the caller's own raise is enforced")
 end)
 
 _G.LibStub = original_libstub

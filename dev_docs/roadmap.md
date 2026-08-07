@@ -803,8 +803,8 @@ shipped limit table no longer customises anything. That write was never a
 supported customisation channel — the tables have been documented as
 inspection copies since v1.1.0 — but it was honoured by a policy built
 afterwards, which is precisely the defect. A caller who was using one
-deliberately must copy the entry and write to the copy, which is what
-`## Safe decoding` now shows. A key the module has no meaning for is no longer
+deliberately must derive from `WithPolicy("generous"):GetPolicy()`, which is
+what `## Safe decoding` now shows. A key the module has no meaning for is no longer
 a policy error when it is written onto a shipped table either: the contents are
 not read, so nothing written there can be rejected any more than it can be
 enforced. A caller's own table is validated exactly as before.
@@ -819,6 +819,46 @@ this module as an argument at all, so it needs no registration.
 
 No decode output changes: the differential gate reports zero divergences
 against v1.2.1 over 13246 compared calls.
+
+### What review found afterwards, and what changed for it
+
+An adversarial review of the pull request could not break the resolver. It
+broke the documentation around it, in one place that mattered.
+
+`README.md` stated that a write to a shipped limit table cannot reach a policy
+derived from it, and then, four hundred lines earlier, told a caller to derive
+one with `for key, value in pairs(LIMIT_PRESETS.generous)`. That loop reads the
+exported table's **contents**. Identity anchors the table, not the values read
+out of it, so the copy starts from the poison and is then enforced exactly as
+written — it is a policy the caller wrote, and nothing about it is
+distinguishable from one. The claim and the recipe on the same page could not
+both be true. `changelog.md` compounded it by pointing anyone broken by the
+behaviour change at that same loop as the migration path, and this section
+endorsed it by reference.
+
+The recipe was replaced rather than the claim retracted. A poison-free
+derivation already shipped: `WithPolicy("generous"):GetPolicy()` returns a copy
+of the private numbers a name resolved to, so the write to the copy starts from
+values nothing on the module table can reach. `README.md`, `changelog.md` and
+the paragraph above now show that shape, and `## Security scope` names the
+hand-rolled `pairs()` copy under what mutation resistance does not cover — the
+recommended path had to become safe _and_ the unsafe path had to be named, or
+the next caller writes the loop from memory. `tests/GuardTest.lua` pins the new
+idiom on a real decode outcome rather than on what `GetPolicy()` reports.
+
+Review also sharpened the entry-substitution bullet. It described a replaced
+entry as "indistinguishable from one you wrote yourself", which is right for a
+fabricated table and understates the cheapest variant:
+
+```lua
+LibDeflateGuard.LIMIT_PRESETS.addon = LibDeflateGuard.LIMIT_PRESETS.generous
+```
+
+That table is registered, so it is not one the module fails to recognise — it
+is one the module positively blesses, resolving canonically to `generous`'s
+private numbers and handing a victim 8 MiB where it asked for 512 KiB. The net
+effect stays inside the documented class and the answer is unchanged, so this
+is a clause rather than a new bullet.
 
 ## What the differential harness does not cover
 

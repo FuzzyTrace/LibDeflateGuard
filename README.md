@@ -273,16 +273,21 @@ reach it. See `### What mutation resistance covers`.
 A caller can also supply any table of its own; omitted keys fall back to the
 `addon` values. `DEFAULT_LIMITS` and `LIMIT_PRESETS` are for inspection.
 Writing to them changes nothing this module enforces — not the defaults, and
-not a policy you build from one afterwards. To derive a policy from a preset,
-copy the entry and write to the copy:
+not a policy you build by handing one of them back. To derive a policy from a
+preset, name the preset and write to the copy `GetPolicy()` hands you:
 
 ```lua
-local policy = {}
-for key, value in pairs(LibDeflateGuard.LIMIT_PRESETS.generous) do
-  policy[key] = value
-end
+local policy = LibDeflateGuard.WithPolicy("generous"):GetPolicy()
 policy.max_output_bytes = 4096
+local guard = LibDeflateGuard.WithPolicy(policy)
 ```
+
+`GetPolicy()` returns a fresh copy of the private numbers the name resolved
+to, so the derivation starts from values nothing written to the module table
+can reach. Reading a shipped entry's _contents_ and copying them by hand —
+`for key, value in pairs(LIMIT_PRESETS.generous)` — starts from whatever that
+table holds when you read it, and carries a write to it into your copy. See
+`### What mutation resistance covers`.
 
 These are per-call budgets. Bounding a _stream_ of messages needs the caller's
 transport context and remains the caller's job.
@@ -704,15 +709,18 @@ Within one Lua state, this module resists a consumer that writes to the
 - `ERRORS`, `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies rather
   than the private tables the module resolves against, so mutating them cannot
   change what the module's own default path enforces.
-- **A write to a shipped limit table cannot reach a policy you derive from it
-  either.** `DEFAULT_LIMITS` and both `LIMIT_PRESETS` entries are registered
-  against the private table each one names, and the policy validator resolves a
-  registered table from that private source rather than from the table's
-  contents. So `LIMIT_PRESETS.generous.max_output_bytes = 4096` followed by
-  `WithPolicy(LIMIT_PRESETS.generous)` enforces 8 MiB, and the write that hands
-  an `addon` instance a 512 MB output cap is inert in the same way. They stay
-  ordinary tables: `pairs()`, `next()`, table identity and use as a table key
-  all behave as before, which per-access copies would have broken.
+- **A write to a shipped limit table cannot reach a policy you derive by
+  handing that table back.** `DEFAULT_LIMITS` and both `LIMIT_PRESETS` entries
+  are registered against the private table each one names, and the policy
+  validator resolves a registered table from that private source rather than
+  from the table's contents. So `LIMIT_PRESETS.generous.max_output_bytes = 4096`
+  followed by `WithPolicy(LIMIT_PRESETS.generous)` enforces 8 MiB, and the write
+  that hands an `addon` instance a 512 MB output cap is inert in the same way.
+  They stay ordinary tables: `pairs()`, `next()`, table identity and use as a
+  table key all behave as before, which per-access copies would have broken.
+  What is anchored is the table, not the values you read out of one; deriving a
+  policy from `WithPolicy("generous"):GetPolicy()` is the shape that starts
+  from the private numbers, and the list below names the shape that does not.
 - **A preset named by string is beyond reach entirely.**
   `WithPolicy("generous")` and `DecompressDeflate(str, "addon")` resolve
   against a private table through a value nothing can write to. Identity
@@ -736,8 +744,30 @@ What it does not cover:
   `LIMIT_PRESETS.generous = {max_output_bytes = 4096}` puts a table there that
   is indistinguishable from one you wrote yourself, and a caller who then reads
   it back and passes it gets what it says. So does replacing `LIMIT_PRESETS`
-  outright. This is the same class as replacing `WithPolicy` itself, and it has
-  the same answer: name the preset, or write your numbers out.
+  outright. An entry can also be substituted with _another shipped preset_ —
+  `LIMIT_PRESETS.addon = LIMIT_PRESETS.generous` — and that table is
+  registered, so it is not merely unrecognised: it resolves canonically, to the
+  wrong preset's private numbers, and a caller who names nothing gets
+  `generous`'s 8 MiB where it asked for `addon`'s 512 KiB. This is the same
+  class as replacing `WithPolicy` itself, and it has the same answer: name the
+  preset, or write your numbers out.
+
+- **Reading a shipped table's contents and copying them by hand is outside
+  what identity can anchor.** Identity intercepts a shipped table you hand
+  back; it cannot intercept values you have already read out of one. So
+
+  ```lua
+  local policy = {}
+  for key, value in pairs(LibDeflateGuard.LIMIT_PRESETS.generous) do
+    policy[key] = value
+  end
+  ```
+
+  copies whatever a consumer wrote to that entry into a table of your own,
+  which is then enforced exactly as written, because it _is_ a policy you
+  wrote. Derive from `WithPolicy("generous"):GetPolicy()` instead, as
+  `## Safe decoding` shows: that copy is made from the private numbers a name
+  resolved to, not from the exported table.
 
 - **`DEFAULT_CODEC_LIMITS` is scalars, and identity anchors nothing.** A caller
   who reads `DEFAULT_CODEC_LIMITS.print_max_input_bytes` and passes it to

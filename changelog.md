@@ -47,17 +47,24 @@
   `LIMIT_PRESETS.generous` or `DEFAULT_LIMITS` no longer customises anything.
   Before this release those writes were honoured by any policy built from the
   table afterwards, which is the defect; if you were using one deliberately as
-  a way to raise a cap, copy the entry and write to the copy instead, which has
-  always been the documented shape and is unchanged:
+  a way to raise a cap, name the preset and write to the copy `GetPolicy()`
+  hands you:
 
   ```lua
-  local policy = {}
-  for key, value in pairs(LibDeflateGuard.LIMIT_PRESETS.generous) do
-    policy[key] = value
-  end
+  local policy = LibDeflateGuard.WithPolicy("generous"):GetPolicy()
   policy.max_output_bytes = 4096
   local guard = LibDeflateGuard.WithPolicy(policy)
   ```
+
+  `GetPolicy()` returns a fresh copy of the private numbers the name resolved
+  to, so the derivation starts from values nothing written to the module table
+  can reach. Copying a shipped entry's contents by hand —
+  `for key, value in pairs(LIMIT_PRESETS.generous)` — was the shape this file
+  and `README.md` used to show, and it is not equivalent: identity anchors a
+  table you hand back, not values you have already read out of one, so that
+  copy carries whatever a consumer wrote into a table of your own and it is
+  enforced as written. `README.md` `### What mutation resistance covers` states
+  both halves.
 
   A key the module has no meaning for is no longer a policy error when it is
   written onto a shipped table either — the contents are not read at all, so
