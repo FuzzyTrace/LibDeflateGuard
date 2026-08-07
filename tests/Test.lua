@@ -2829,7 +2829,12 @@ function TestExported:TestExported()
     DecodeForPrint = "function",
     DecompressDeflateWithDict = "function",
     EncodeForWoWAddonChannel = "function",
-    DecompressZlib = "function"
+    DecompressZlib = "function",
+    -- PROTOTYPE, resumable decode. See dev_docs/roadmap.md item C. It is
+    -- listed here because this assertion pins the public surface, and a
+    -- prototype reachable from the module table is part of that surface
+    -- whether or not it is supported.
+    EXPERIMENTAL_ResumableDecompressDeflate = "function"
   }
   for k, v in pairs(exported) do lu.assertEquals(v, type(LibDeflate[k])) end
   for k, v in pairs(LibDeflate) do lu.assertEquals(type(v), exported[k]) end
