@@ -33,9 +33,11 @@
 <h2>Contents</h2>
 <ul>
 <li><a href="#What_is_different">What is different </a></li>
+<li><a href="#Migrating_from_LibDeflate">Migrating from LibDeflate </a></li>
 <li><a href="#Loading_the_private_module">Loading the private module </a></li>
 <li><a href="#Safe_decoding">Safe decoding </a></li>
 <li><a href="#Compression_and_codecs">Compression and codecs </a></li>
+<li><a href="#Performance">Performance </a></li>
 <li><a href="#Security_scope">Security scope </a></li>
 <li><a href="#Validation">Validation </a></li>
 <li><a href="#Provenance_and_upstream_updates">Provenance and upstream updates </a></li>
@@ -71,6 +73,12 @@
 proven LibDeflate compressor, RFC 1951 wire format, and established World of
 Warcraft codecs while adding strict resource limits and stable, non-throwing
 decode failures.</p>
+
+<p>"Security-hardened" is meant narrowly and is worth reading as written: it means
+bounded single-call decoding and strict rejection of non-canonical input, with
+the resource limits as the part that closes a reachable vulnerability. It is
+not a claim of protection against code that already shares your Lua state.
+<code>## Security scope</code> says what is and is not covered.</p>
 
 <p>The first maintained release is based on upstream LibDeflate
 <code>1.0.2-release</code>, commit <code>afc3b78d12fb3bcfa6b21e5332031ad3d7572e19</code>.
@@ -109,6 +117,151 @@ preserved.</p>
 
 <p>LibDeflateGuard does not replace an installed stock LibDeflate. An application
 can load both modules without either one mutating the other.</p>
+
+<p><a name="Migrating_from_LibDeflate"></a></p>
+<h2>Migrating from LibDeflate</h2>
+
+<p>Every behaviour in this section is stated somewhere else in this file too,
+except the arity table at the end, which is collected here and nowhere else.
+The rest is repeated because all of it fails at run time rather than at load
+time, and because a reader arriving from upstream's README will not find it
+where it lives.</p>
+
+<h3><code>Decompress(Compress(x))</code> is refused on the module</h3>
+
+<p>A compressor returns two values, the second being <code>padding_bitlen</code>. On the
+module the second value lands in the decompressor's <code>limits</code> slot, which is not
+a policy:</p>
+
+
+<pre>
+<span class="comment">-- Refused: returns nil, "invalid_argument"
+</span>LibDeflateGuard:DecompressDeflate(LibDeflateGuard:CompressDeflate(message))
+</pre>
+
+
+<p>Name the intermediate value, or use a policy instance, whose bound decoders
+take no policy argument and ignore the extra value:</p>
+
+
+<pre>
+<span class="keyword">local</span> compressed = LibDeflateGuard:CompressDeflate(message)
+<span class="keyword">local</span> round_tripped = LibDeflateGuard:DecompressDeflate(compressed)
+
+<span class="comment">-- or
+</span><span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy()
+guard:DecompressDeflate(guard:CompressDeflate(message))
+</pre>
+
+
+<p>This is deliberate. Accepting a number in the <code>limits</code> slot and discarding it
+would make one entry point silently ignore an argument every other malformed
+value in that position is refused for.</p>
+
+<h3>The default budget is 64 KiB in and 512 KiB out</h3>
+
+<p>This is the most likely upgrade break: upstream has no budget, so a member that
+decompressed before can now return <code>nil, &quot;output_limit_exceeded&quot;</code>. Raise it
+deliberately rather than by accident:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+</pre>
+
+
+<p>Know what that costs. The default <code>addon</code> preset's worst accepted call is 10 to
+15 ms, which is inside one frame at 60 fps with little to spare. Under
+<code>generous</code> the same shapes are 155 to 238 ms and about 25 MB of allocation. See
+<code>## Performance</code>.</p>
+
+<h3>Decoders answer instead of raising</h3>
+
+<p>Upstream raises on a wrongly typed argument to a decoder. Every decoder here
+returns <code>nil</code> and a stable code from <code>LibDeflateGuard.ERRORS</code> instead. An
+existing <a href="https://www.lua.org/manual/5.1/manual.html#pdf-pcall">pcall</a> wrapper around a decode still works and is now dead code:
+there is nothing left for it to catch.</p>
+
+<p>Compressors, encoders and <code>CreateDictionary</code> are unchanged and still raise on a
+programmer error.</p>
+
+<h3>Encoders return exactly one value</h3>
+
+<p><code>codec:Encode</code>, <code>EncodeForWoWAddonChannel</code> and <code>EncodeForWoWChatChannel</code>
+forwarded <a href="https://www.lua.org/manual/5.1/manual.html#pdf-string.gsub">string.gsub</a>'s substitution count as a second return value before
+v1.1.2. They no longer do. A caller written as <code>local s, n = Encode(x)</code> now
+gets <code>nil</code> for <code>n</code>.</p>
+
+<h3>A <code>WithPolicy</code> instance caps compression input</h3>
+
+<p>An instance derives a compression input cap from its own <code>max_input_bytes</code>, so
+binding an instance for safe <em>decoding</em> also imposes a compression ceiling —
+64 KiB under the default policy. <code>guard:CompressDeflate(big)</code> returns
+<code>nil, &quot;input_limit_exceeded&quot;</code> where <code>LibDeflateGuard:CompressDeflate(big)</code>
+would have compressed it. Defensible, and surprising, so it is said here.</p>
+
+<p>The derived cap is a default, not a ceiling on the ceiling. A
+<code>configs.max_input_bytes</code> passed at the call site wins over it, in either
+direction:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy() <span class="comment">-- compression capped at 64 KiB
+</span>guard:CompressDeflate(big, {max_input_bytes = <span class="number">1024</span> * <span class="number">1024</span>}) <span class="comment">-- 1 MiB applies</span>
+</pre>
+
+
+<p>An explicit argument at the call site beating a value the instance derived for
+you is the ordinary reading of both, so it is deliberate. It does mean an
+instance bounds compression only for callers who do not pass the key.</p>
+
+<h3>Channel decoding costs more</h3>
+
+<p><code>DecodeForWoWAddonChannel</code> is about 50% slower than upstream, which is the
+direct cost of rejecting non-canonical escapes. <code>DecodeForWoWChatChannel</code>
+measures 11 to 17% slower but rarely outside the measurement's own spread, so it
+should be read as somewhat slower rather than as a number. <code>DecodeForPrint</code> and
+the deflate paths are about flat, and stored blocks are about 40% faster. See
+<code>## Performance</code> for the measurements and for what they are measured on.</p>
+
+<h3>Arity</h3>
+
+<p>Success and failure paths for every public entry point. The channel decoders
+return a trailing <code>nil</code> on success where <code>DecodeForPrint</code> and <code>codec:Decode</code>
+return one value, which matters if you forward a decode result straight into
+another call's argument list.</p>
+
+<p>| Call                                               | Success        | Failure                |
+| -------------------------------------------------- | -------------- | ---------------------- |
+| <code>CompressDeflate</code>, <code>CompressZlib</code>, <code>…WithDict</code>     | <code>str, padding</code> | <code>nil, code</code>, or raises |
+| <code>DecompressDeflate</code>, <code>DecompressZlib</code>, <code>…WithDict</code> | <code>str, 0</code>       | <code>nil, code</code>            |
+| <code>EncodeForPrint</code>                                   | <code>str</code>          | raises                 |
+| <code>EncodeForWoWAddonChannel</code>                         | <code>str</code>          | raises                 |
+| <code>EncodeForWoWChatChannel</code>                          | <code>str</code>          | raises                 |
+| <code>codec:Encode</code>                                     | <code>str</code>          | raises                 |
+| <code>DecodeForPrint</code>                                   | <code>str</code>          | <code>nil, code</code>            |
+| <code>DecodeForWoWAddonChannel</code>                         | <code>str, nil</code>     | <code>nil, code</code>            |
+| <code>DecodeForWoWChatChannel</code>                          | <code>str, nil</code>     | <code>nil, code</code>            |
+| <code>codec:Decode</code>                                     | <code>str</code>          | <code>nil, code</code>            |
+| <code>WithPolicy</code>                                       | <code>instance</code>     | <code>nil, code</code>            |
+| <code>CreateCodec</code>                                      | <code>codec</code>        | <code>nil, text</code>, or raises |
+| <code>CreateDictionary</code>                                 | <code>dictionary</code>   | raises                 |
+| <code>Adler32</code>                                          | <code>number</code>       | raises                 |
+| <code>GetPolicy</code>, <code>GetCodecLimits</code>                      | <a href="https://www.lua.org/manual/5.1/manual.html#5.5">table</a>        | none                   |</p>
+
+<p>A compressor raises on a malformed argument, including a malformed
+<code>max_input_bytes</code>, because that is a programmer error. An input that merely
+exceeds a well-formed cap is a runtime outcome and returns
+<code>nil, &quot;input_limit_exceeded&quot;</code>. The same shapes hold on a <code>WithPolicy</code> instance.</p>
+
+<p><code>CreateCodec</code> is the one asymmetric row and is worth reading twice. A
+wrongly typed argument raises, like every other programmer-facing entry point.
+A well-typed argument the constructor cannot satisfy — too few escape
+characters for the reserved set — returns <code>nil</code> and an English sentence,
+<code>&quot;Out of escape characters.&quot;</code>, which is inherited from upstream and is <em>not</em> a
+stable code from <code>ERRORS</code>. Do not match on it. <code>GetPolicy</code> and
+<code>GetCodecLimits</code> exist only on a <code>WithPolicy</code> instance and take no argument, so
+they have no failure path at all.</p>
 
 <p><a name="Loading_the_private_module"></a></p>
 <h2>Loading the private module</h2>
@@ -292,12 +445,18 @@ member followed by one or more complete bytes fails with <code>trailing_data</co
 Unused padding bits in the final raw Deflate byte remain valid RFC 1951
 padding.</p>
 
-<p><code>max_output_bytes</code> bounds the decoded string, not the Lua heap. Peak heap
-during a decode measures roughly 3 to 4 times the decoded size, because the
-flushed output chunks, the final concatenated string, and the 32768-byte
-sliding window are all live at the same time. Size the policy against that
-multiplier: the default 512 KiB output cap implies a transient peak of roughly
-1.5 to 2 MiB, and the <code>generous</code> 8 MiB cap implies roughly 26 to 32 MiB.</p>
+<p><code>max_output_bytes</code> bounds the decoded string, not the Lua heap. A decode holds
+the flushed output chunks, the final concatenated string, and the 32768-byte
+sliding window live at the same time, so the transient cost is a multiple of
+the decoded size — and the multiple falls as the decode grows, because the
+window is a fixed 32768 bytes however large the output is. Measured with
+<code>tests/BenchTest.lua</code>, one call allocates roughly 4 to 5 times the decoded size
+at the default 512 KiB cap, about 2.0 to 2.5 MB, and roughly 2 to 3 times at
+the <code>generous</code> 8 MiB cap, about 16 to 25 MB. Those are allocation totals and
+include garbage the call discards, so they bound the peak rather than being it:
+an earlier hand measurement of peak heap on shapes built to the same
+description, though not from the same bytes, read 1.8 to 2.3 MB and 14.4 to
+22.6 MB. Size a policy against the upper figure. See <code>## Performance</code>.</p>
 
 <p><a name="Compression_and_codecs"></a></p>
 <h2>Compression and codecs</h2>
@@ -412,6 +571,183 @@ would accept. The channel codecs never grow their input, so their cap is
 raising each cap by hand: an instance applies exactly these ratios to its own
 policy, so the codec caps and the decompress budget cannot drift apart.</p>
 
+<p><a name="Performance"></a></p>
+<h2>Performance</h2>
+
+<p>Every figure in this section comes from <code>tests/BenchTest.lua</code>, and can be
+regenerated by anyone. Nothing here is hand-timed.</p>
+
+<h3>Against upstream LibDeflate</h3>
+
+<p>Upstream LibDeflate <code>1.0.2-release</code> at <code>afc3b78</code>, <code>luajit -joff</code> as the World
+of Warcraft interpreter proxy, median of 21 alternated rounds, ten independent
+runs. The right-hand column is the range of what those ten runs actually
+printed, so that the claim in the middle column can be checked against its own
+evidence. It is a record of what those ten runs produced rather than a
+tolerance band: a re-run usually lands inside it, and the widest-spread rows —
+stored blocks most of all — can fall outside it without anything being wrong.</p>
+
+<p>| Path                                   | vs upstream          | Measured, ten runs              |
+| -------------------------------------- | -------------------- | ------------------------------- |
+| <code>DecompressDeflate</code>, compressible text | about flat           | +3.5% to +6.2%, spread ±3–11%   |
+| <code>DecompressDeflate</code>, stored blocks     | about 40% <strong>faster</strong> | −40.7% to −43.5%, spread ±8–17% |
+| <code>DecodeForWoWAddonChannel</code>             | about 50% <strong>slower</strong> | +46.8% to +54.0%, spread ±6–27% |
+| <code>DecodeForWoWChatChannel</code>              | about flat           | +11.1% to +17.3%, spread ±4–16% |
+| <code>DecodeForPrint</code>                       | about flat           | −2.9% to +3.1%, spread ±9–19%   |
+| Small message, decode then decompress  | about flat           | +7.9% to +11.5%, spread ±5–14%  |</p>
+
+<p>Four of the six rows say "about flat" because the difference the harness found
+is smaller than the harness's own spread for that comparison, and a number
+smaller than its floor is not a result. The harness names those rows in words
+under its table rather than leaving a reader to compare two columns.</p>
+
+<p>Three of them are worth reading more carefully than "flat" suggests.
+<code>DecompressDeflate</code> on compressible text, <code>DecodeForWoWChatChannel</code> and the
+small-message round trip all read positive on every one of the ten runs — at
+roughly 4 to 6%, 11 to 17% and 8 to 11% respectively — and none of the three
+cleared its own spread on any of those ten runs. A fresh run does clear it
+occasionally, but rarely enough that all three are best described as somewhat
+slower, not measurably so. Do not quote a figure for any of them. Only stored
+blocks and <code>DecodeForWoWAddonChannel</code> clear the floor, and both do so by a wide
+margin.</p>
+
+<p>Allocated bytes per call are within 3% of upstream on every path, and identical
+to the byte on the three codec decoders. Unlike the timings, the allocation
+figures reproduce exactly: all ten runs printed the same six numbers.</p>
+
+<p><strong>Which call shape the deflate rows measured.</strong> The harness passes an explicit
+<code>LIMIT_PRESETS.addon</code> table on every one of this module's decompress calls,
+which is a shape upstream has no analogue for: resolving a supplied policy
+means two short walks over a five-key table and one table allocation per call,
+none of which upstream does. The table above is therefore the cost of the
+explicit-policy call shape, and it is worth saying so rather than leaving a
+reader to assume the plainest call was the one timed.</p>
+
+<p>Measured, that argument turns out to cost almost nothing. Paired inside one
+process, 41 alternated rounds, <code>DecompressDeflate(str, policy)</code> against
+<code>DecompressDeflate(str)</code> — the same enforced numbers either way, since <code>addon</code>
+<em>is</em> the module default — the median difference on the 8 KB member is a point or
+two at most and not separable from zero: two runs of this protocol gave +0.00%
+and +1.80%. A 256 B member reads +0.44%, about 0.25 µs of fixed cost per call.
+Running the whole table with the policy argument dropped moves no row outside
+its own ten-run range. So the deflate rows are not inflated by the argument in
+any degree the harness can see; the caveat is about what was measured, not about
+a correction to apply. A <code>WithPolicy</code> instance resolves its policy once at bind
+time and does not pay even that.</p>
+
+<h3>Where the cost is</h3>
+
+<ul>
+    <li><strong>Per-symbol budget charging on the Huffman path.</strong> Every literal, length,
+    distance and end-of-block symbol increments a work counter and tests it. That
+    is the mechanism the whole budget is built on, and it is why the deflate
+    paths are at best flat rather than free.</li>
+    <li><strong>A second linear pass over the input on every codec decode.</strong> Before the
+    substitution passes upstream runs, this fork scans for a reserved character
+    and then walks every escape byte in the string checking that its suffix is
+    one the encoder could have produced. That is the direct cost of rejecting
+    dangling, unknown and otherwise non-canonical escapes, and it is what the
+    addon channel's 50% buys.</li>
+</ul>
+
+<p>The two channel decoders differ so much because that extra pass is a fixed cost
+per byte while the codecs do very different amounts of other work. On the same
+2369-byte member, <code>DecodeForWoWAddonChannel</code> takes about 48 µs and
+<code>DecodeForWoWChatChannel</code> about 920 µs, because the chat codec substitutes
+across a far larger reserved set. The same added pass is therefore about a
+third of one call and a small fraction of the other.</p>
+
+<h3>Where the fork is faster</h3>
+
+<p><code>ReadBytes</code>, which carries the stored-block path, is unrolled eight ways and
+reads through the <code>_byte_to_char</code> table instead of calling <a href="https://www.lua.org/manual/5.1/manual.html#pdf-string.sub">string.sub</a> once
+per byte. That is worth about 40% on a stored member. It has nothing to do with
+the guard and is a straight win.</p>
+
+<h3>The compressors</h3>
+
+<p>The harness does not measure them, so this section publishes no compressor
+number of its own and no vs-upstream compressor delta. The one compression
+figure this file quotes — about 1.9 MB/s at level 6, under
+<code>## Compression and codecs</code> — is an earlier hand measurement, kept where it is
+used rather than repeated here, so that "nothing here is hand-timed" stays true
+of this section.</p>
+
+<p>The compression code itself is unchanged from upstream. What the input cap
+added is a length check in each of the four public entry points, plus, in the
+shared argument validator, one more key comparison per entry in the <a href="https://www.lua.org/manual/5.1/manual.html#pdf-pairs">pairs</a>
+walk it already made over <code>configs</code> and a validation branch that runs only when
+<code>max_input_bytes</code> is present. That is more than "a single check", which is what
+this section said before, but all of it still runs once per call before any
+compression work begins and none of it is inside a loop over the input, so the
+substance is unchanged: compression throughput here is upstream's.</p>
+
+<h3>Worst accepted work per preset</h3>
+
+<p>What sizes a policy: the most expensive single call each preset will accept,
+with each shape built to decode to exactly that preset's <code>max_output_bytes</code>.</p>
+
+<p>| Preset     | Shape       | Input    | Decoded | Time   | Allocated |
+| ---------- | ----------- | -------- | ------- | ------ | --------- |
+| <code>addon</code>    | match bomb  | 2.5 KB   | 512 KB  | 10 ms  | 2.0 MB    |
+| <code>addon</code>    | import blob | 30.5 KB  | 512 KB  | 15 ms  | 2.5 MB    |
+| <code>generous</code> | match bomb  | 39.5 KB  | 8 MB    | 155 ms | 16.4 MB   |
+| <code>generous</code> | import blob | 483.5 KB | 8 MB    | 238 ms | 24.6 MB   |</p>
+
+<p>Each <strong>Time</strong> is the highest median any of the ten runs produced, rounded up. A
+worst case that rounds down is not a worst case. The ranges behind the four
+rows are 8.9–9.6, 13.0–14.6, 143–155 and 214–238 ms.</p>
+
+<p>A frame at 60 fps is 16.7 ms, so the <code>addon</code> preset's worst accepted call fits
+inside one frame — but only just. 15 ms against 16.7 is about 1.7 ms of
+headroom, roughly 10%, on the machine named below, and the World of Warcraft
+client's interpreter is slower than that machine, so there the same call can
+run past a frame. What the preset was sized for survives that margin, because
+the claim is that a rejected or maximal message costs a dropped frame rather
+than a freeze, and a call two or three times slower than 15 ms is still a hitch
+of a few frames. It is not a claim that the budget sits comfortably inside a
+frame; it does not. <code>generous</code> is 238 ms, about fourteen dropped frames, and is
+not frame-safe. Note that the 155 ms adversarial case is reached from 39.5 KB
+of attacker-supplied input.</p>
+
+<p><strong>Allocated</strong> is bytes allocated during one call with the collector stopped, so
+it counts garbage the call discards as well as what it keeps. It is not peak
+heap, which cannot be sampled from inside Lua, but it does bound peak heap from
+above, and unlike peak heap it is regenerable.</p>
+
+<p>An earlier hand measurement read peak heap of 1.8, 2.3, 14.4 and 22.6 MB. Its
+four shapes were built to the same description as these — match bomb and import
+blob, each saturating each preset's output cap — but not from the same bytes:
+that measurement's match bomb was 0.7 KB of input for 512 KB out where the
+harness's is 2.5 KB. So the two are measurements of similar work rather than of
+the same call. The times agree closely and each peak figure sits below the
+allocation total for its row, which is what a bound should do; that is
+corroboration, not a paired reading. The regenerable figures are the ones in
+the table.</p>
+
+<h3>One machine</h3>
+
+<p>AMD Ryzen 9 7900X, Windows 11, LuaJIT 2.1.1720049189 run with <code>-joff</code>. The
+World of Warcraft client's interpreter is slower than this, so every millisecond
+figure above is a floor rather than a ceiling.</p>
+
+<p>Regenerate the comparison with:</p>
+
+
+<pre>
+git worktree add ../upstream-baseline afc3b78d12fb3bcfa6b21e5332031ad3d7572e19
+LIBDEFLATEGUARD_BENCH_REFERENCE=../upstream-baseline/LibDeflate.lua \
+  luajit -joff tests/BenchTest.lua
+</pre>
+
+
+<p>Run without <code>LIBDEFLATEGUARD_BENCH_REFERENCE</code> for the saturation table alone,
+which needs no reference module. Use <code>-joff</code> for anything that goes into a
+document: with the JIT on, two modules this similar share one trace cache and a
+delta moves further between runs than the spread reported within a run. The
+harness prints that warning itself, and prints <code>jit.status()</code> either way. See
+<code>dev_docs/toolchain.md</code>.</p>
+
 <p><a name="Security_scope"></a></p>
 <h2>Security scope</h2>
 
@@ -437,6 +773,94 @@ there is a stable machine-readable reason for each failure, uniform handling of
 wrongly typed arguments, and structural containment so a future decode-path
 change cannot reintroduce a raise. That is an API contract and defense in
 depth, not a patched upstream defect.</p>
+
+<h3>The stall is bounded, not removed</h3>
+
+<p>The budgets are per call. What they bound is the work of one decode, not the
+time your client spends in this library.</p>
+
+<ul>
+    <li>Under the default <code>addon</code> preset the worst call the policy accepts costs 10
+    to 15 ms, against a 16.7 ms frame at 60 fps. That is inside a frame by about
+    1.7 ms on the machine <code>## Performance</code> names, and the client's interpreter is
+    slower than that machine, so treat the margin as thin rather than as spare
+    capacity. A rejected or maximal message is a dropped frame or a few, not a
+    freeze. That is what the preset was sized for.</li>
+    <li>Under <code>generous</code> the same shapes cost 155 to 238 ms. That is not frame-safe.
+    It is the right choice for a user-initiated import behind a progress
+    indicator, and the wrong one for incoming traffic.</li>
+    <li>Bounding a <em>stream</em> of messages needs transport context this library does not
+    have, and remains the caller's job. A message flood is still an exposure:
+    every message is individually cheap and bounded, and a thousand of them are
+    not.</li>
+</ul>
+
+<p>See <code>## Performance</code> for the measurements and the machine they were taken on.</p>
+
+<h3>What mutation resistance covers</h3>
+
+<p>Within one Lua state, this module resists a consumer that writes to the
+<code>LibDeflateGuard</code> table:</p>
+
+<ul>
+    <li><code>ERRORS</code>, <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code> are inspection copies rather
+    than the private tables the module resolves against, so mutating them cannot
+    change what the module's own default path enforces. Read the bullet below on
+    what that does not extend to.</li>
+    <li>The Adler-32 check the zlib decoder verifies a member with is bound
+    privately, rather than read back off the module table at call time.</li>
+    <li>The two World of Warcraft channel codecs are built by a private constructor,
+    so replacing <code>LibDeflateGuard.CreateCodec</code> cannot choose the codec a channel
+    decode runs through — including after <code>internals.InternalClearCache()</code>, which
+    is public and clears the lazy cache.</li>
+    <li>A <code>WithPolicy</code> instance holds its resolved policy in an upvalue, so mutating
+    the table passed to <code>WithPolicy</code>, or the copies <code>GetPolicy()</code> and
+    <code>GetCodecLimits()</code> return, cannot change what the instance enforces.</li>
+</ul>
+
+<p>What it does not cover:</p>
+
+<ul>
+    <li><strong>A preset is an inspection copy, not a read-only one, and a policy derived
+    from a mutated preset carries the mutation.</strong> <code>LIMIT_PRESETS.generous</code> is one
+    table built at load time and hung on the public module table, and
+    <code>## Migrating from LibDeflate</code> tells you to hand that entry straight to
+    <code>WithPolicy</code>. The copy is made once, so the read a caller performs is a read
+    of whatever is in the table by then:</li>
+</ul>
+
+<p>  ```lua
+  LibDeflateGuard.LIMIT<em>PRESETS.generous.max</em>output_bytes = 4096
+  local guard =</p>
+
+<pre>
+LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+</pre>
+
+<p>  -- the instance enforces 4096, not 8 MiB
+  ```</p>
+
+<p>  It loosens as readily as it tightens: the same write can hand an <code>addon</code>
+  instance a 512 MB output cap. What the copy stops is a mutation reaching the
+  module's own defaults. What it does not stop is one reaching an instance a
+  caller builds out of a preset, or a table a caller passes as <code>limits</code>. Write
+  the numbers out, or copy the entry yourself, if that matters to you. Item H
+  in <code>dev_docs/roadmap.md</code> proposes closing it.</p>
+
+<ul>
+    <li>A <code>WithPolicy</code> instance is an ordinary table. Anything holding it can replace
+    its <em>methods</em>; only the policy is sealed.</li>
+    <li><code>LibDeflateGuard.internals</code> is test-only and writable.</li>
+    <li>A codec returned by your own <code>CreateCodec</code> call is yours, and reshaping it is
+    legitimate rather than an attack. The guard suite pins that boundary
+    deliberately so a later hardening pass does not close it by accident.</li>
+</ul>
+
+<p>The frame this belongs in matters. In World of Warcraft's shared Lua state,
+this is defence in depth against accident and against a library that reaches
+too far. It is not a boundary against a hostile addon, which is already inside
+the same state and can reach your tables directly. Claiming otherwise would be
+claiming something Lua cannot deliver here.</p>
 
 <p><a name="Validation"></a></p>
 <h2>Validation</h2>

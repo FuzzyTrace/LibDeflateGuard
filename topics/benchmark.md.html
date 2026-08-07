@@ -55,6 +55,25 @@
 
 <h1>Performance Benchmark</h1>
 
+<p><strong>This file is inherited upstream material and is not about LibDeflateGuard.</strong>
+It was written for upstream LibDeflate, it compares upstream LibDeflate with
+LibCompress, and it was measured in 2019 on the hardware and interpreters named
+below. Nothing in it describes this fork, its resource limits, or the cost of
+them, and no figure in it has been regenerated here.</p>
+
+<p>It is kept because it is part of the history this repository preserves rather
+than because it answers a question about the code you are running. For anything
+about LibDeflateGuard — how it compares with upstream, what the budgets cost per
+call, and what the worst call each preset accepts costs in milliseconds — read
+the <code>## Performance</code> section of <a href="../README.md">README.md</a>, whose figures come
+from <code>tests/BenchTest.lua</code> and can be regenerated with a documented command.</p>
+
+<p>Regenerating this file is deliberately not planned: it needs LibCompress and a
+corpus this repository does not carry, and the comparison it makes is not the
+one a consumer of this fork is asking.</p>
+
+<hr/>
+
 <ul>
     <li>Operating System: Windows 10 version 1909 (Build 18363)</li>
     <li>Lua Interpreters:</li>
