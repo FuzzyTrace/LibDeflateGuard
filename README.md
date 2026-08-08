@@ -108,6 +108,10 @@ returns `nil` and a stable code from `LibDeflateGuard.ERRORS` instead. An
 existing `pcall` wrapper around a decode still works and is now dead code:
 there is nothing left for it to catch.
 
+When you write the comparison that replaces it, compare against the string
+literal rather than against `LibDeflateGuard.ERRORS`. `## Safe decoding` lists
+the codes and says why.
+
 Compressors, encoders and `CreateDictionary` are unchanged and still raise on a
 programmer error.
 
@@ -227,11 +231,23 @@ The same contract applies to:
 - `DecompressZlibWithDict(str, dictionary, limits)`
 
 Success returns the decoded string and numeric status `0`, preserving the
-upstream success tuple. Failure returns `nil` and one of the strings in
-`LibDeflateGuard.ERRORS`. The stable error codes include
-invalid arguments, input/output/work/block/symbol limit exhaustion, trailing
-data, truncation, invalid streams, checksum or dictionary failures, invalid
-codec input, and contained internal exceptions.
+upstream success tuple. Failure returns `nil` and one of fifteen stable
+strings, which are the values of `LibDeflateGuard.ERRORS` and are the complete
+set:
+
+`invalid_argument`, `input_limit_exceeded`, `output_limit_exceeded`,
+`work_limit_exceeded`, `block_limit_exceeded`, `symbol_limit_exceeded`,
+`trailing_data`, `truncated_input`, `invalid_stream`, `checksum_mismatch`,
+`dictionary_required`, `dictionary_mismatch`, `invalid_escape`,
+`invalid_print`, `internal_error`.
+
+Compare against the literal — `decode_error == "output_limit_exceeded"` —
+rather than against `LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED`. The two are
+the same string today. The difference is that the code a decode _returns_ comes
+from a private table and cannot be changed by anything in the Lua state, while
+`ERRORS` is an ordinary writable field on a public module table, so the
+comparison is the half another addon can break. A copy captured at load works
+too. See `### What mutation resistance covers`.
 
 All limits are positive integer byte or work counts. Omitted keys use the
 defaults. Two presets ship with the library:
@@ -411,10 +427,9 @@ Omitting the key means no cap, which is the behavior of every earlier release.
 A malformed cap — the wrong type, zero, negative, fractional, infinite —
 raises, exactly as every other malformed compression argument does. An input
 that merely exceeds a well-formed cap is a runtime outcome, not a programmer
-error, so it returns `nil` plus
-`LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED`, the same shape the decode path
-uses. Both paths return exactly two values, so no caller's argument list
-changes shape.
+error, so it returns `nil` plus `"input_limit_exceeded"`, the same shape the
+decode path uses. Both paths return exactly two values, so no caller's argument
+list changes shape.
 
 A policy instance derives this cap from its own `max_input_bytes`, so
 `guard:CompressDeflate(str)` is capped without a configuration table. Note
@@ -706,9 +721,19 @@ See `## Performance` for the measurements and the machine they were taken on.
 Within one Lua state, this module resists a consumer that writes to the
 `LibDeflateGuard` table:
 
-- `ERRORS`, `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies rather
-  than the private tables the module resolves against, so mutating them cannot
-  change what the module's own default path enforces.
+- `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies rather than the
+  private tables the module resolves against, so mutating them cannot change
+  what the module's own default path enforces.
+- **The code a decode returns is stable. The `ERRORS` table you compare it
+  against is not.** Every failure path reads a private table, so after
+  `LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED = "x"` an over-budget decode
+  still returns `"output_limit_exceeded"` — the write cannot change the
+  outcome, the reason reported, or the code any other consumer receives. What
+  it does break is `err == LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED`,
+  because that read is the consumer's and runs against a writable field. The
+  codes are documented stable strings for exactly this reason: compare against
+  the literal, or against a copy you captured at load. The list below says why
+  this one cannot be closed the way the limit tables were.
 - **A write to a shipped limit table cannot reach a policy you derive by
   handing that table back.** `DEFAULT_LIMITS` and both `LIMIT_PRESETS` entries
   are registered against the private table each one names, and the policy
@@ -774,6 +799,21 @@ What it does not cover:
   `DecodeForPrint` passes a number, and this module cannot tell that number
   from any other. Omit the cap to get the private default, or use a
   `WithPolicy` instance, whose codec decoders take no cap at all.
+
+- **`ERRORS` is writable, and no mechanism here can anchor it.** Identity
+  anchoring works on the limit tables because _this module_ does the reading: a
+  table handed back to the policy validator is resolved from private storage
+  instead of from its contents, so the write is never read. Error codes are
+  read by the _consumer_, and there is nothing of this module's in the way. One
+  line from another addon —
+  `LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED = "x"`, or `ERRORS = {}` —
+  makes every `err == LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED` in the
+  state answer false, and a consumer that branches on it takes the wrong
+  branch while the decode underneath it reports correctly. A resolver function
+  on the module table would not close this either: a consumer would have to
+  read _that_ off the same writable table, so it would be one more thing to
+  overwrite rather than a private path. The string literal is the shape nothing
+  can reach, and it is what `## Safe decoding` documents.
 
 - A `WithPolicy` instance is an ordinary table. Anything holding it can replace
   its _methods_; only the policy is sealed.

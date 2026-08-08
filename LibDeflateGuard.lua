@@ -100,7 +100,12 @@ end
 -- is an inspection copy: a consumer that writes to the public table cannot
 -- change the code a decode returns. Unlike DEFAULT_LIMITS and LIMIT_PRESETS
 -- it is never handed back to this module as an argument, so it needs no
--- registration in _canonical_decompress_limits.
+-- registration in _canonical_decompress_limits -- and registration would buy
+-- nothing here, because the read that a write breaks is the consumer's
+-- `err == LibDeflateGuard.ERRORS.X`, not one of ours. Nothing this module
+-- holds is in the way of that read, which is why the codes are documented as
+-- stable string literals to compare against. See README.md
+-- `### What mutation resistance covers`.
 local _ERRORS = {
   INVALID_ARGUMENT = "invalid_argument",
   INPUT_LIMIT_EXCEEDED = "input_limit_exceeded",

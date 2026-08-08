@@ -12,7 +12,8 @@ Items A–D were agreed after the v1.1.2 regression fixes. Items E–G were agre
 after an external review of the whole fork against upstream `afc3b78`, and
 shipped in v1.2.1. Item H was found by review of item G's documentation, and
 shipped in v1.3.0 — a minor version rather than a patch because it changes
-behaviour.
+behaviour. Item I was found by review of item H's documentation, and is
+documentation and a test rather than a behaviour change.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
@@ -24,6 +25,7 @@ behaviour.
 | F   | Benchmark harness against a reference module    | done       |
 | G   | Document performance, migration, and scope      | done       |
 | H   | Preset mutation carries into a derived policy   | done       |
+| I   | `ERRORS` cannot be anchored the same way        | done       |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -860,6 +862,102 @@ is one the module positively blesses, resolving canonically to `generous`'s
 private numbers and handing a victim 8 MiB where it asked for 512 KiB. The net
 effect stays inside the documented class and the answer is unchanged, so this
 is a clause rather than a new bullet.
+
+## I. `ERRORS` cannot be anchored the way the limit tables were — done
+
+Found by review of item H's own sentence, the same way H was found by review of
+item G's. Documentation and a regression test; no code change beyond a comment.
+
+### The defect
+
+`README.md` `### What mutation resistance covers` opened with `ERRORS`,
+`DEFAULT_LIMITS` and `LIMIT_PRESETS` in one list of inspection copies. After H
+that sentence carried the weight of a strong claim for the two limit tables —
+they are anchored by identity, and a write cannot reach a policy derived from
+them. `ERRORS` sat in the same sentence with none of that, and the paragraph
+below it dismissed the question in one clause: never handed back as an
+argument, so no registration needed. True, and not the whole exposure.
+
+```lua
+LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED = "x"
+local output, err = LibDeflateGuard:DecompressDeflate(bomb, "addon")
+-- returned code:                             output_limit_exceeded
+-- err == G.ERRORS.OUTPUT_LIMIT_EXCEEDED  ->  false
+```
+
+The code a decode _returns_ is stable, because every failure path reads the
+private `_ERRORS`. The table a consumer _compares against_ is a plain writable
+field on the public module table, and one line from another addon breaks every
+consumer's error handling in the state while the decode underneath reports
+correctly. Silently: the branch is simply not taken.
+
+### Why item H's mechanism does not transfer
+
+This is the distinction worth keeping, because it is what decides the answer.
+Identity anchoring works on the limit tables because **this module performs the
+read**. A caller hands a table back to the policy validator, and the validator
+resolves it from private storage instead of from its contents, so the write is
+never read. There is a read of ours to put the anchor in front of.
+
+An error code is read by **the consumer**. There is no read of ours in the
+path, so there is nothing to anchor. The asymmetry is structural, not an
+oversight in H.
+
+### Options, and why only one is defensible
+
+1. **Narrow the claim.** Split `ERRORS` out, state the guarantee that does
+   hold, name the one that does not, and document the codes as literals to
+   compare against.
+2. **A resolver on the module table** — `GetErrorCode("OUTPUT_LIMIT_EXCEEDED")`
+   — returning from private storage. **This buys nothing.** A consumer has to
+   read the resolver off the same writable module table, so it is one more
+   field to overwrite, and against the threat in question it is strictly weaker
+   than the string literal it would compete with. It also adds public API for
+   it, and the kill criterion in this file is that pulling away from "LibDeflate
+   plus budgets" is a reason to stop.
+3. **Make `ERRORS` read-only** with an `__index`/`__newindex` proxy. Breaks
+   `pairs()` on Lua 5.1 and LuaJIT for the same reason option 1 in item H did,
+   and a consumer can replace `LibDeflateGuard.ERRORS` wholesale regardless, so
+   it buys a partial defence at the cost H already declined to pay.
+
+Option 1 is what a consumer can act on today: the codes have always been
+stable strings, so `err == "output_limit_exceeded"` is a comparison nothing in
+the state can reach. The gap was that `README.md` described the codes by
+category rather than listing them, so the advice was not followable.
+
+### Outcome
+
+Landed as documentation, one source comment, one line of `examples/example.lua`
+and one test. `## Safe decoding` lists all fifteen codes and states the
+comparison rule; `### What mutation resistance covers` states the narrow
+guarantee and names the writable table under what it does not cover, with the
+reasoning above so the resolver is not proposed again; the migration section
+points at the rule where a caller writes their first comparison. The example no
+longer models a comparison through `ERRORS`.
+
+Worth recording that this is a smaller claim than the one it replaces, not a
+larger one. The frame at the end of `## Security scope` already said this is
+defence in depth against accident rather than a boundary against a hostile
+addon; `ERRORS` is a case where that frame is load-bearing rather than a
+disclaimer.
+
+### Regression test
+
+`tests/GuardTest.lua` overwrites every value in `ERRORS`, then replaces the
+table outright, and asserts real decode outcomes: the limit, argument, stream,
+truncation, trailing, codec and compressor paths all still return their
+documented literals. Asserting against literals is the whole point — a code
+read back out of the poisoned table would compare equal to anything.
+
+It also pins the other half deliberately, the way the codec-reshaping boundary
+in item E is pinned: comparing through the public table is broken by a write,
+and a later change that makes that equality hold is a strengthening that should
+update `## Security scope` rather than delete the assertion.
+
+Checked by mutation. Reverting one failure path to `LibDeflateGuard.ERRORS.…`
+— the v1.1.2 shape — fails this test and **nothing else in the suite**, because
+every other assertion in `GuardTest.lua` compares through `ERRORS` and moves
+with the poison.
 
 ## What the differential harness does not cover
 
