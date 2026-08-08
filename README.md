@@ -426,12 +426,20 @@ LibDeflateGuard:DecompressDeflate(member, {
 -- now:    decodes, because both backstops moved with the budgets
 ```
 
-A consequence worth stating plainly: because the work cap is now derived to
-exactly what the other three make reachable, and each of those is checked
-before work at every shared charge site, **`work_limit_exceeded` cannot occur
-under a derived policy.** One of the other four answers first. It is still
-reported when you set `max_work_units` yourself, which is how the boundary
-tests in `tests/GuardTest.lua` and the incremental-decode prototype drive it.
+A consequence worth stating plainly, because it is what "backstop" means here:
+both caps are derived to exactly what the other three make reachable, so
+**neither `symbol_limit_exceeded` nor `work_limit_exceeded` can occur under a
+derived policy.** The symbol cap is not reachable because a decode cannot
+charge more symbols than the input has bits, and the work cap is not reachable
+because work is the sum of three quantities that are each checked first at
+every shared charge site. Input, output or blocks answers instead.
+
+That is not dead code. A cap sitting exactly on a bound is a tripwire: if a
+future change adds a charge site, stops charging one, or breaks the
+one-bit-per-decode property these rest on, the derived cap starts firing and
+says so. Both are still reported when you set them yourself, which is how the
+boundary vectors in `tests/GuardTest.lua` and the incremental-decode prototype
+drive the decoder.
 
 Both keys remain fully settable and an explicit value is used exactly as given,
 in either direction. An explicit `max_symbols` also feeds the work derivation,

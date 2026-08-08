@@ -117,10 +117,14 @@
   tightening one tightens the other.
 
   One consequence is stated in `README.md` rather than left to be
-  rediscovered: because the work cap is now derived to exactly what the other
-  three make reachable, and each of those is checked first at every shared
-  charge site, `work_limit_exceeded` cannot occur under a derived policy. It is
-  still reported when a caller sets `max_work_units` themselves.
+  rediscovered. Because both caps are now derived to exactly what the other
+  three make reachable, neither `symbol_limit_exceeded` nor
+  `work_limit_exceeded` can occur under a derived policy — input, output or
+  blocks answers instead. That is what makes them backstops rather than
+  budgets, and it is not dead code: a cap sitting exactly on a bound fires if a
+  later change adds a charge site, stops charging one, or breaks the
+  one-bit-per-decode property they rest on. Both are still reported when a
+  caller sets them.
 
   Deletion of the two counters was considered and rejected. A variant with both
   stripped from the hot loop was benchmarked over nine `-joff` runs plus one at

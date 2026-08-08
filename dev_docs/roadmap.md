@@ -1093,14 +1093,26 @@ real, leaving at most `ndist` = 30 entries to overshoot. Measured, that path
 charges 31 past exhaustion and reports `truncated_input`. 318 is used anyway
 because it is a bound that needs no case analysis to stay true.
 
-### What this does to the work cap
+### What this does to both caps
 
-`work = symbols + output + block work`, and all three are separately guarded
-with the tighter check first, so **the derived work cap can no longer fire at
-all** unless a caller sets it explicitly. That is the honest consequence of
-deriving it to the reachable bound, and it is stated in `README.md` rather than
-left for someone to rediscover. The tripwire is still there for anyone who
-sets the key.
+Deriving to the reachable bound means neither cap can fire under a derived
+policy. Symbols cannot, because a decode cannot charge more than the input has
+bits plus the slack above. Work cannot, because
+`work = symbols + output + block work` and all three are separately guarded
+with the tighter check first at every shared charge site.
+
+Checked rather than asserted: 4,800 decodes over compressed, truncated and
+trailing members under policies naming neither key produced
+`invalid_stream`, `truncated_input`, `trailing_data`, `output_limit_exceeded`,
+`input_limit_exceeded`, `block_limit_exceeded` and success — and **zero** of
+either backstop. Adding explicit `max_symbols` policies to the same run brought
+`symbol_limit_exceeded` back 174 times, so the counters are alive.
+
+This is stated in `README.md` rather than left for someone to rediscover, and
+framed there as what it is: a cap sitting exactly on a bound is a tripwire. If
+a later change adds a charge site, stops charging one, or breaks the
+one-bit-per-decode property, the derived cap starts firing. The keys are still
+settable for anyone who wants to drive the decoder with them.
 
 ### Outcome
 
