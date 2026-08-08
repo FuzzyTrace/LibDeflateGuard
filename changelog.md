@@ -1,4 +1,4 @@
-### LibDeflateGuard unreleased
+### LibDeflateGuard v1.3.0
 
 - **Fixed.** A write to a shipped limit table carried into a policy a caller
   derived from it. `LIMIT_PRESETS` and `DEFAULT_LIMITS` are copies of the
