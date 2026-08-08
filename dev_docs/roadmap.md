@@ -10,8 +10,9 @@ artifact. Tick items off here as they land.
 
 Items A–D were agreed after the v1.1.2 regression fixes. Items E–G were agreed
 after an external review of the whole fork against upstream `afc3b78`, and
-shipped in v1.2.1. Item H was found by review of item G's documentation; it is
-done and unreleased, and is a minor version because it changes behaviour.
+shipped in v1.2.1. Item H was found by review of item G's documentation, and
+shipped in v1.3.0 — a minor version rather than a patch because it changes
+behaviour.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
