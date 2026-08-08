@@ -1291,6 +1291,75 @@ Test("the recommended derivation starts from the private numbers", function()
   AssertEqual(#raised, bomb_output, "the caller's own raise is enforced")
 end)
 
+-- Item I. ERRORS sat in the same ## Security scope sentence as the two limit
+-- tables item H anchored, and it did not get -- and cannot get -- the same
+-- protection. Identity anchoring works there because this module does the
+-- reading: a table handed back to the policy validator is resolved from
+-- private storage instead of from its contents. An error code is read by the
+-- consumer, and nothing of ours is in the way of that read.
+--
+-- What survives a hostile write is therefore the returned code, and that is
+-- what these assert -- on real decode outcomes, and against string literals,
+-- because a code read back out of the poisoned table would assert nothing.
+Test("a hostile write to ERRORS cannot change the code a decode returns",
+     function()
+  local G = FreshGuard()
+  local bomb = MatchBomb(4096)
+  local bomb_output = 1 + 258 * 4096
+  assert(#bomb < G.LIMIT_PRESETS.addon.max_input_bytes,
+         "the bomb must clear the input cap to be a real test")
+  assert(bomb_output > G.LIMIT_PRESETS.addon.max_output_bytes,
+         "the bomb must exceed the addon output cap")
+
+  -- What one line from any other addon in the state can do to the table.
+  for key in pairs(G.ERRORS) do G.ERRORS[key] = "poisoned_" .. key end
+
+  local output, code = G:DecompressDeflate(bomb, "addon")
+  AssertEqual(output, nil, "a poisoned ERRORS table must not change the outcome")
+  AssertEqual(code, "output_limit_exceeded",
+              "the returned code comes from the private table")
+
+  -- Every other failure family reads the same private table: argument
+  -- validation, the stream paths, the codec decoders, the input cap, and the
+  -- contained-exception path's neighbours.
+  AssertEqual(select(2, G:DecompressDeflate(42)), "invalid_argument",
+              "argument validation code under a poisoned table")
+  AssertEqual(select(2, G:DecompressDeflate(FromHex("06"))), "invalid_stream",
+              "malformed stream code under a poisoned table")
+  AssertEqual(select(2, G:DecompressDeflate(FromHex("010100feff"))),
+              "truncated_input", "truncated code under a poisoned table")
+  AssertEqual(select(2, G:DecompressDeflate(FromHex("33040058"))),
+              "trailing_data", "trailing code under a poisoned table")
+  AssertEqual(select(2, G:DecompressDeflate(bomb, {max_input_bytes = 1})),
+              "input_limit_exceeded", "input cap code under a poisoned table")
+  AssertEqual(select(2, G:DecodeForPrint("!")), "invalid_print",
+              "codec decoder code under a poisoned table")
+
+  -- A compressor answers with a code for an over-budget input too, and reads
+  -- the same private table to do it.
+  AssertEqual(select(2, G:CompressDeflate(string.rep("x", 4096),
+                                          {max_input_bytes = 1024})),
+              "input_limit_exceeded", "compressor code under a poisoned table")
+
+  -- Replacing the table outright is the cheaper write and is no different.
+  G.ERRORS = {}
+  AssertEqual(select(2, G:DecompressDeflate(bomb, "addon")),
+              "output_limit_exceeded",
+              "the returned code survives ERRORS being replaced")
+
+  -- The other half, pinned deliberately rather than left to be discovered:
+  -- comparing through the public table is what a write breaks, and this
+  -- module cannot stop it. README ### What mutation resistance covers says so
+  -- in as many words. If a later change ever makes this equality hold, that is
+  -- a strengthening -- update the claim there with it, do not delete the line.
+  local H = FreshGuard()
+  H.ERRORS.OUTPUT_LIMIT_EXCEEDED = "poisoned"
+  local _, live = H:DecompressDeflate(bomb, "addon")
+  AssertEqual(live, "output_limit_exceeded", "second module returns the code")
+  assert(live ~= H.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+         "the public table is writable; the docs must not claim otherwise")
+end)
+
 _G.LibStub = original_libstub
 _G.LibDeflate = original_libdeflate
 _G.LibDeflateGuard = original_libdeflateguard

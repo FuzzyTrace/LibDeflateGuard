@@ -133,5 +133,9 @@ assert(guard:DecompressDeflate(guard:DecodeForPrint(
 local refused, compress_error = LibDeflateGuard:CompressDeflate(
                                   string.rep("x", 4096),
                                   {max_input_bytes = 1024})
+-- Compared against the literal rather than against
+-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED. The returned code comes from a
+-- private table and is stable; the public ERRORS table is writable, so a
+-- comparison through it is the half another addon can break.
 assert(refused == nil)
-assert(compress_error == LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED)
+assert(compress_error == "input_limit_exceeded")
