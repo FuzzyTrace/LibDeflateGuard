@@ -53,6 +53,110 @@
 <div id="content">
 
 
+<h3>LibDeflateGuard unreleased</h3>
+
+<ul>
+    <li><strong>Fixed.</strong> A write to a shipped limit table carried into a policy a caller
+    derived from it. <code>LIMIT_PRESETS</code> and <code>DEFAULT_LIMITS</code> are copies of the
+    private tables, so a write to one never reached the module's own default
+    path — but <a href="../topics/README.md.html#">README.md</a> documents
+    <code>WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)</code>, and that read returned
+    whatever a consumer had written to the copy by then:</li>
+</ul>
+
+<p>  ```lua
+  LibDeflateGuard.LIMIT<em>PRESETS.generous.max</em>output_bytes = 4096
+  local guard =</p>
+
+<pre>
+LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+</pre>
+
+<p>  -- before: the instance enforced 4096. Now: 8 MiB.
+  ```</p>
+
+<p>  It loosened as readily as it tightened: the same write could hand an <code>addon</code>
+  instance a 512 MB output cap, which is the direction that matters for a fork
+  whose reason to exist is bounding a decode. The same read through the
+  <code>limits</code> parameter of the decompressors carried it too.</p>
+
+<p>  Each exported limit table is now registered against the private table it
+  names, and the policy validator resolves a registered table from that private
+  source rather than from the table's own contents. Copying the table on the
+  way in was never the fix — <code>WithPolicy</code> already copied — because the values
+  were already wrong when they were read.</p>
+
+<ul>
+    <li><strong>Added.</strong> The decompressors and <code>WithPolicy</code> accept a preset <em>name</em> in place
+    of a policy table: <code>&quot;addon&quot;</code> or <code>&quot;generous&quot;</code>, the vocabulary the command
+    line's <code>--limits</code> already uses.</li>
+</ul>
+
+<p>  ```lua
+  local guard = LibDeflateGuard.WithPolicy("generous")
+  local output = LibDeflateGuard:DecompressDeflate(compressed, "addon")
+  ```</p>
+
+<p>  This is now the recommended shape, and it is a stronger guarantee than the
+  fix above rather than a convenience. Identity anchors a table this module
+  handed out; it cannot anchor one a consumer put in its place, so
+  <code>LIMIT_PRESETS.generous = {max_output_bytes = 4096}</code> still yields a table
+  indistinguishable from a policy the caller wrote. A string is not mutable and
+  resolves against nothing a consumer can reach. An unrecognised name is an
+  invalid policy, reported as <code>ERRORS.INVALID_ARGUMENT</code> the way every other
+  invalid policy is.</p>
+
+<ul>
+    <li><strong>Changed, and it can break you.</strong> Writing to <code>LIMIT_PRESETS.addon</code>,
+    <code>LIMIT_PRESETS.generous</code> or <code>DEFAULT_LIMITS</code> no longer customises anything.
+    Before this release those writes were honoured by any policy built from the
+    table afterwards, which is the defect; if you were using one deliberately as
+    a way to raise a cap, name the preset and write to the copy <code>GetPolicy()</code>
+    hands you:</li>
+</ul>
+
+<p>  ```lua
+  local policy = LibDeflateGuard.WithPolicy("generous"):GetPolicy()
+  policy.max<em>output</em>bytes = 4096
+  local guard = LibDeflateGuard.WithPolicy(policy)
+  ```</p>
+
+<p>  <code>GetPolicy()</code> returns a fresh copy of the private numbers the name resolved
+  to, so the derivation starts from values nothing written to the module table
+  can reach. Copying a shipped entry's contents by hand —
+  <code>for key, value in pairs(LIMIT_PRESETS.generous)</code> — was the shape this file
+  and <a href="../topics/README.md.html#">README.md</a> used to show, and it is not equivalent: identity anchors a
+  table you hand back, not values you have already read out of one, so that
+  copy carries whatever a consumer wrote into a table of your own and it is
+  enforced as written. <a href="../topics/README.md.html#">README.md</a> <code>### What mutation resistance covers</code> states
+  both halves.</p>
+
+<p>  A key the module has no meaning for is no longer a policy error when it is
+  written onto a shipped table either — the contents are not read at all, so
+  nothing written there can be rejected any more than it can be enforced.
+  <code>LIMIT_PRESETS.generous.unknown_key = 1</code> used to make the next
+  <code>WithPolicy(LIMIT_PRESETS.generous)</code> return <code>invalid_argument</code>. A caller's own
+  table is validated exactly as before.</p>
+
+<p>  What deliberately does not change is everything else about those tables. They
+  are still ordinary tables with real fields: <code>pairs()</code> and <code>next()</code> enumerate
+  them, <code>LIMIT_PRESETS.generous == LIMIT_PRESETS.generous</code>, and a preset still
+  works as a table key. Handing out a fresh copy per access — the other
+  candidate fix — would have broken all three, silently, since Lua 5.1 and
+  LuaJIT have no <code>__pairs</code> to soften it. This module's own suite iterates these
+  tables in three places.</p>
+
+<p>  <code>ERRORS</code> and <code>DEFAULT_CODEC_LIMITS</code> are unchanged. Neither is ever handed
+  back to this module as an argument, so identity has nothing to anchor:
+  <code>DEFAULT_CODEC_LIMITS</code> carries scalars a caller reads out and passes as a
+  number, and the shape that resolves privately is to omit the cap, or to use a
+  <code>WithPolicy</code> instance, whose codec decoders take none.</p>
+
+<ul>
+    <li><strong>No decode output changes.</strong> The differential harness reports zero
+    divergences against v1.2.1 over 13246 compared calls.</li>
+</ul>
+
 <h3>LibDeflateGuard v1.2.1</h3>
 
 <ul>

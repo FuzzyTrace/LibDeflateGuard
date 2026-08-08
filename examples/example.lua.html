@@ -171,8 +171,10 @@ freely, subject to the following restrictions:
 </span><span class="comment">-- The instance derives the codec input caps and the compression input cap
 </span><span class="comment">-- from the policy's max_input_bytes, so they cannot drift apart, and its
 </span><span class="comment">-- methods nest directly because they take no trailing cap argument.
-</span><span class="keyword">local</span> guard = <span class="global">assert</span>(LibDeflateGuard.WithPolicy(
-                       LibDeflateGuard.LIMIT_PRESETS.generous))
+</span><span class="comment">-- The preset is named rather than read out of LIMIT_PRESETS: a name resolves
+</span><span class="comment">-- against a private table, so nothing another addon writes to the module
+</span><span class="comment">-- table can alter what this instance enforces.
+</span><span class="keyword">local</span> guard = <span class="global">assert</span>(LibDeflateGuard.WithPolicy(<span class="string">"generous"</span>))
 
 <span class="global">assert</span>(guard:DecompressDeflate(guard:CompressDeflate(example_input)) ==
          example_input)

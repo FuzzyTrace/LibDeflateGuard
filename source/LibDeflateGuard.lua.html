@@ -219,8 +219,9 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
  "limits" parameter uses, and the resolved numbers are held in an upvalue
  rather than in a field. Mutating the table passed to this function
  afterwards, or writing to the returned instance, cannot change what the
- instance enforces. That is the property LIMIT<em>PRESETS and DEFAULT</em>LIMITS
- already have.</p>
+ instance enforces. Nor can mutating a LIMIT_PRESETS entry before the call:
+ an exported limit table resolves to the private constant it names rather
+ than to its own current contents.</p>
 
 <p> Encoders, CreateDictionary and Adler32 are exposed on the instance
  unchanged. They are not budgeted: an encoder's input is the caller's own
@@ -233,9 +234,11 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
     <h3>Parameters:</h3>
     <ul>
         <li><span class="parameter">policy</span>
-         [table/nil] A LIMIT_PRESETS entry, a partial table of limit
- keys, or nil for the defaults. Exactly what the "limits" parameter of the
- decompressors accepts.
+         [string/table/nil] A preset name, "addon" or "generous"; a
+ LIMIT_PRESETS entry; a partial table of limit keys; or nil for the defaults.
+ Exactly what the "limits" parameter of the decompressors accepts. A name is
+ the shape nothing written to the module table can alter, and is preferred
+ for that reason. An unrecognised name is an invalid policy.
         </li>
     </ul>
 
@@ -253,8 +256,7 @@ https://github.com/FuzzyTrace/LibDeflateGuard/issues</li>
 
     <h3>Usage:</h3>
     <ul>
-        <pre class="example"><span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS
-                                           .generous)
+        <pre class="example"><span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy(<span class="string">"generous"</span>)
 <span class="keyword">local</span> payload, decode_error = guard:DecodeForPrint(pasted)</pre>
     </ul>
 
