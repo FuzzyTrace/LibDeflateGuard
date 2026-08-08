@@ -54,6 +54,95 @@
 - **No functional change.** The only edit to `LibDeflateGuard.lua` is a
   comment. The differential harness reports zero divergences against v1.3.0.
 
+- **Changed.** `max_symbols` and `max_work_units` are now derived from the
+  other three budgets when they are omitted, instead of holding constants that
+  no policy could move.
+
+  External review found, and two independent investigations confirmed, that
+  **neither budget could fire at either shipped preset.** Every Huffman decode
+  consumes at least one input bit and every literal produces one output byte,
+  so the input and output caps already bound both counters far below the
+  numbers the presets carried:
+
+  | preset     | symbol cap | reachable | work cap   | reachable  |
+  | ---------- | ---------- | --------- | ---------- | ---------- |
+  | `addon`    | 750,000    | 524,288   | 1,500,000  | 1,134,592  |
+  | `generous` | 10,000,000 | 8,388,608 | 25,000,000 | 18,153,472 |
+
+  The root cause was not the gap but the absence of a derivation: `750000` and
+  `1500000` appeared nowhere with a justification, so there was nothing to
+  check them against and nothing to move them by. What that cost a caller was a
+  limit they never named:
+
+  ```lua
+  LibDeflateGuard:DecompressDeflate(member, {
+    max_input_bytes = 64 * 1024 * 1024,
+    max_output_bytes = 64 * 1024 * 1024,
+  })
+  -- before: work_limit_exceeded, from the addon work cap the policy inherited
+  -- now:    decodes
+  ```
+
+  Both budgets the caller wrote admit the member. It was refused by a third
+  they could not see in their own policy and had no way to size.
+
+  Omitted keys now derive, with every term traced to a charge site in the
+  decoder:
+
+  ```
+  max_symbols    = 8 * max_input_bytes + 318
+  max_work_units = max_symbols + max_output_bytes + 336 * max_blocks
+  ```
+
+  The `318` is slack for a truncated member, and it is not decoration. The
+  decoder tests for exhausted input _after_ decoding a symbol, and its
+  code-length loop does not test at all, so a member cut short charges symbols
+  past the end of its own input. Constructed rather than argued: a four-byte
+  dynamic header cut at the code-length loop charges 316 symbols against 32
+  input bits, and a 64 KiB member built from one-bit literal codes charges
+  524,501 against the `addon` cap of 524,288. Without the slack that member is
+  reported as `symbol_limit_exceeded` **at the shipped default**, which is a
+  budget answering for a malformed stream. `318 = 286 + 30 + 2` bounds it: one
+  dynamic code-length alphabet, plus one literal/length and one distance symbol
+  in the body, and nothing can follow because the exhaustion test never passes
+  again once it has failed.
+
+  `LIMIT_PRESETS` carries the derived numbers, so a preset and a partial policy
+  naming the same three budgets enforce the same two backstops: `addon` is now
+  524,606 and 1,134,910, `generous` 8,388,926 and 18,153,790.
+
+  **Both keys remain fully settable and there is no API break.** An explicit
+  value is used exactly as given, in either direction; only the fallback
+  changed. An explicit `max_symbols` also feeds the work derivation, so
+  tightening one tightens the other.
+
+  One consequence is stated in `README.md` rather than left to be
+  rediscovered. Because both caps are now derived to exactly what the other
+  three make reachable, neither `symbol_limit_exceeded` nor
+  `work_limit_exceeded` can occur under a derived policy — input, output or
+  blocks answers instead. That is what makes them backstops rather than
+  budgets, and it is not dead code: a cap sitting exactly on a bound fires if a
+  later change adds a charge site, stops charging one, or breaks the
+  one-bit-per-decode property they rest on. Both are still reported when a
+  caller sets them.
+
+  Deletion of the two counters was considered and rejected. A variant with both
+  stripped from the hot loop was benchmarked over nine `-joff` runs plus one at
+  101 rounds: the deflate rows read +4.0% and +5.3% median and were positive on
+  9 of 9 runs, but cleared their own spread on only 2 of 9, against control
+  rows scattering ±3%. By the standard `tests/BenchTest.lua` prints under every
+  table, that delta is inside the floor and **is not quoted as a figure**.
+  Beyond the unmeasurable cost, removing the keys would make `{max_symbols = …}` an `invalid_argument` and break the `GetPolicy()` round-trip idiom this
+  README recommends, and would delete a tripwire the boundary vectors in
+  `tests/GuardTest.lua` and the incremental-decode prototype both rely on.
+
+  The differential harness reports zero divergences against v1.3.0, over 13,246
+  and 152,405 compared calls. `tests/GuardTest.lua` pins the derivation, the
+  partial-policy case, explicit settability in both directions, and the
+  truncated-header edge the slack exists for. `tests/BenchTest.lua` carries
+  literal copies of the preset numbers for old reference modules and
+  cross-checks them against the shipped tables; they were updated with it.
+
 ### LibDeflateGuard v1.3.0
 
 - **Fixed.** A write to a shipped limit table carried into a policy a caller

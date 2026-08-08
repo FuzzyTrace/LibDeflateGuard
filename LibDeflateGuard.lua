@@ -134,20 +134,66 @@ for key, code in pairs(_ERRORS) do LibDeflateGuard.ERRORS[key] = code end
 --
 -- These are per-call budgets. Bounding a stream of messages needs the
 -- caller's transport context and remains the caller's job.
+--
+-- Only three of the five are budgets a caller picks. max_symbols and
+-- max_work_units are backstops on those three: each one is derived below from
+-- what the decoder can actually reach under the other caps, so an omitted key
+-- inherits a bound that tracks the policy instead of a constant that may sit
+-- far above or below it. Both stay explicitly settable -- item C's incremental
+-- decoder and the exact-boundary vectors in tests/GuardTest.lua drive the
+-- decoder by setting them -- and an explicit value is used exactly as given.
+-- See README.md `### The two derived backstops` and dev_docs/roadmap.md item J.
+
+-- Every Huffman decode consumes at least one input bit, and every symbol
+-- charge is one Decode call, so the input cap bounds the symbol count. The
+-- slack covers the decodes that can still be charged after the input is
+-- exhausted: ReaderBitlenLeft() < 0 is tested after a symbol is decoded, and
+-- the code-length loop in DecompressDynamicBlock does not test it at all, so
+-- one dynamic header can charge its whole alphabet -- nlen + ndist, at most
+-- 286 + 30 -- off the end, and DecodeUntilEndOfBlock can then charge one
+-- literal/length plus one distance symbol before its own test fires. That is
+-- the whole of it: the test never passes again once it has failed, so no
+-- second header can follow. Without the slack a truncated member can be
+-- reported as symbol_limit_exceeded, which is a backstop firing for a reason
+-- unrelated to what it guards.
+local _EXHAUSTED_INPUT_SYMBOL_SLACK = 286 + 30 + 2
+
+-- Work charges one unit per symbol, one per output byte, one per block, and
+-- ncode + nlen + ndist per dynamic block header, which RFC 1951 bounds at
+-- 19 + 286 + 30 = 335. With the block itself that is 336 per block.
+local _WORK_UNITS_PER_BLOCK = 336
+
+local function DeriveSymbolCap(max_input_bytes)
+  return 8 * max_input_bytes + _EXHAUSTED_INPUT_SYMBOL_SLACK
+end
+
+local function DeriveWorkCap(max_symbols, max_output_bytes, max_blocks)
+  return max_symbols + max_output_bytes + _WORK_UNITS_PER_BLOCK * max_blocks
+end
+
+local function AddDerivedBackstops(limits)
+  limits.max_symbols = DeriveSymbolCap(limits.max_input_bytes)
+  limits.max_work_units = DeriveWorkCap(limits.max_symbols,
+                                        limits.max_output_bytes,
+                                        limits.max_blocks)
+end
+
+-- The presets name only the three budgets they choose. The other two are
+-- filled in below by the same derivation an omitted key takes, so a preset and
+-- a partial policy naming the same three enforce the same two backstops.
+-- addon resolves to 524606 and 1134910, generous to 8388926 and 18153790.
 local _addon_decompress_limits = {
   max_input_bytes = 64 * 1024,
   max_output_bytes = 512 * 1024,
-  max_blocks = 256,
-  max_symbols = 750000,
-  max_work_units = 1500000
+  max_blocks = 256
 }
 local _generous_decompress_limits = {
   max_input_bytes = 1024 * 1024,
   max_output_bytes = 8 * 1024 * 1024,
-  max_blocks = 4096,
-  max_symbols = 10000000,
-  max_work_units = 25000000
+  max_blocks = 4096
 }
+AddDerivedBackstops(_addon_decompress_limits)
+AddDerivedBackstops(_generous_decompress_limits)
 local _default_decompress_limits = _addon_decompress_limits
 
 local function CopyLimits(limits)
@@ -2290,18 +2336,43 @@ local function ResolveDecompressLimits(limits)
   if canonical then return canonical end
 
   local resolved = {}
-  for key, default_value in pairs(_default_decompress_limits) do
-    local value = default_value
-    if limits and limits[key] ~= nil then value = limits[key] end
-    if type(value) ~= "number" or value ~= value or value < 1 or value ==
-      math_huge or value ~= math_floor(value) then return nil end
-    resolved[key] = value
+  for key in pairs(_default_decompress_limits) do
+    local value = limits[key]
+    if value ~= nil then
+      if type(value) ~= "number" or value ~= value or value < 1 or value ==
+        math_huge or value ~= math_floor(value) then return nil end
+      resolved[key] = value
+    end
   end
 
-  if limits then
-    for key in pairs(limits) do
-      if _default_decompress_limits[key] == nil then return nil end
-    end
+  for key in pairs(limits) do
+    if _default_decompress_limits[key] == nil then return nil end
+  end
+
+  -- The three budgets a caller picks fall back to the default for that budget.
+  if resolved.max_input_bytes == nil then
+    resolved.max_input_bytes = _default_decompress_limits.max_input_bytes
+  end
+  if resolved.max_output_bytes == nil then
+    resolved.max_output_bytes = _default_decompress_limits.max_output_bytes
+  end
+  if resolved.max_blocks == nil then
+    resolved.max_blocks = _default_decompress_limits.max_blocks
+  end
+
+  -- The two backstops fall back to what the other three make reachable, not
+  -- to a constant. Inheriting a constant is what made
+  -- {max_input_bytes = 64 MiB, max_output_bytes = 64 MiB} report
+  -- work_limit_exceeded: the raised budgets were admitted and then refused by
+  -- an unraised backstop the caller never named. The work cap is derived from
+  -- the resolved max_symbols, so an explicit symbol budget tightens it too.
+  if resolved.max_symbols == nil then
+    resolved.max_symbols = DeriveSymbolCap(resolved.max_input_bytes)
+  end
+  if resolved.max_work_units == nil then
+    resolved.max_work_units = DeriveWorkCap(resolved.max_symbols,
+                                            resolved.max_output_bytes,
+                                            resolved.max_blocks)
   end
   return resolved
 end

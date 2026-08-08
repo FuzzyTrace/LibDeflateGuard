@@ -13,7 +13,9 @@ after an external review of the whole fork against upstream `afc3b78`, and
 shipped in v1.2.1. Item H was found by review of item G's documentation, and
 shipped in v1.3.0 — a minor version rather than a patch because it changes
 behaviour. Item I was found by review of item H's documentation, and is
-documentation and a test rather than a behaviour change.
+documentation and a test rather than a behaviour change. Item J came from an
+external review of the limit model, which found that two of the five budgets
+could not fire at either shipped preset.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
@@ -26,6 +28,7 @@ documentation and a test rather than a behaviour change.
 | G   | Document performance, migration, and scope      | done       |
 | H   | Preset mutation carries into a derived policy   | done       |
 | I   | `ERRORS` cannot be anchored the same way        | done       |
+| J   | `max_symbols` and `max_work_units` are derived  | done       |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -958,6 +961,188 @@ Checked by mutation. Reverting one failure path to `LibDeflateGuard.ERRORS.…`
 — the v1.1.2 shape — fails this test and **nothing else in the suite**, because
 every other assertion in `GuardTest.lua` compares through `ERRORS` and moves
 with the poison.
+
+## J. `max_symbols` and `max_work_units` are derived, not chosen — done
+
+Found by external review of the limit model, and confirmed by two independent
+investigations before anything was changed. Behaviour change at the defaults;
+no API change.
+
+### The finding
+
+**Neither budget could fire at either shipped preset.** Every Huffman decode
+consumes at least one input bit, and every literal produces one output byte, so
+the input and output caps already bound both counters well below the constants
+the presets carried:
+
+| preset     | symbol cap | reachable | work cap   | reachable  |
+| ---------- | ---------- | --------- | ---------- | ---------- |
+| `addon`    | 750,000    | 524,288   | 1,500,000  | 1,134,592  |
+| `generous` | 10,000,000 | 8,388,608 | 25,000,000 | 18,153,472 |
+
+The root cause is not the gap. It is that `750000` and `1500000` appear in
+`README.md`, this file and `changelog.md` with **no derivation anywhere** — so
+there was nothing to check them against, and nothing to move them by when a
+caller raised the budgets they were supposed to back up. A number with no
+derivation cannot be reviewed, and this is what that costs.
+
+What the gap did cost a caller was a limit they never named:
+
+```lua
+LibDeflateGuard:DecompressDeflate(member, {
+  max_input_bytes = 64 * 1024 * 1024,
+  max_output_bytes = 64 * 1024 * 1024,
+})
+-- v1.3.0: work_limit_exceeded, from the addon work cap the policy inherited
+```
+
+Both budgets the caller wrote admit the member. It is refused by a third the
+caller did not write, cannot see in the policy, and had no way to size.
+
+### The measurement, and why no figure is quoted
+
+A variant with both counters stripped from `DecodeUntilEndOfBlock` was
+benchmarked over nine `-joff` runs plus one at 101 rounds. The deflate rows
+read **+4.0% and +5.3% median, positive on 9 of 9 runs, and clear of their own
+spread on only 2 of 9**, against control rows — byte-identical codec paths —
+scattering ±3% between the same two builds.
+
+By the standard `tests/BenchTest.lua` prints under every table it produces, a
+delta smaller than its spread is the floor talking. **The cost of these two
+counters is inside the floor and must not be quoted as a figure.** It is
+recorded here so the next person does not re-run it expecting a number.
+
+### Why deletion was rejected
+
+Three reasons, none of them the measurement:
+
+1. The cost is unmeasurable, so deletion buys nothing that can be stated.
+2. `ResolveDecompressLimits` rejects unknown keys. Removing the keys would make
+   `{max_symbols = …}` an `invalid_argument`, which breaks the `GetPolicy()`
+   round-trip idiom `README.md` recommends — a caller reads a policy out,
+   edits one field, hands it back.
+3. It would delete a deliberate tripwire. `tests/GuardTest.lua`'s
+   exact-boundary vectors and item C's prototype both drive the decoder by
+   setting these two, and both would lose the only budget that charges per
+   decode rather than per byte.
+
+### The derivation
+
+Both are backstops on the other three budgets, which is what they have always
+been in fact. Each term traces to a charge site in the decoder:
+
+```
+max_symbols    = 8 * max_input_bytes + 318
+max_work_units = max_symbols + max_output_bytes + 336 * max_blocks
+```
+
+- `8 * max_input_bytes` — every `Decode` consumes at least one bit, and every
+  symbol charge is one `Decode` call. Loose in the safe direction for zlib,
+  whose two header bytes and four Adler bytes are not deflate bits.
+- `336 * max_blocks` — one work unit per block, plus `ncode + nlen + ndist` per
+  dynamic header, which RFC 1951 bounds at 19 + 286 + 30 = 335.
+- `max_output_bytes` — one work unit per output byte.
+
+### The slack term, which is not decoration
+
+`ReaderBitlenLeft() < 0` is tested **after** a symbol is decoded, and the
+code-length loop in `DecompressDynamicBlock` does not test it at all. So a
+truncated member decodes symbols past exhaustion, and `8 * max_input_bytes` is
+not an upper bound on what it charges.
+
+This was constructed rather than argued. A four-byte member — `BFINAL`,
+`BTYPE 10`, `HLIT` 286, `HDIST` 30, `HCLEN` 4, and four two-bit code lengths —
+runs out of input the instant its code-length loop begins, and every all-zero
+decode past the end yields code-length symbol 0 and advances the loop by one:
+
+```
+truncated dynamic header, 4 bytes = 32 input bits
+  symbols charged      : 316
+  overshoot over 8*len : 284
+```
+
+Scaled up, it reaches the shipped `addon` preset. A 64 KiB member holding one
+dynamic block whose literal/length alphabet is two **one-bit** codes — literal
+`A` and end-of-block — charges one symbol per input bit for 523,926 literals,
+then a 29-bit truncated second header:
+
+```
+64 KiB pressed against the addon caps, 65536 bytes, 523926 literals
+  symbols charged      : 524501
+  8 * max_input_bytes  : 524288
+  overshoot            : 213
+  output bytes         : 523926 of 524288
+  with slack 0   -> symbol_limit_exceeded
+  with slack 318 -> invalid_stream   (v1.3.0: invalid_stream)
+```
+
+Without slack the backstop fires **at the shipped default** and reports
+`symbol_limit_exceeded` for a member whose fault is that it is malformed. A
+budget answering for truncation is exactly the defect this item set out not to
+introduce.
+
+`318 = 286 + 30 + 2` bounds it: one dynamic code-length alphabet is `nlen + ndist` entries at most, and `DecodeUntilEndOfBlock` can then charge one
+literal/length plus one distance symbol before its own test fires. Nothing can
+follow, because `ReaderBitlenLeft()` never rises once it has gone negative, so
+no second header can straddle exhaustion.
+
+The two halves cannot both be maximal in one member: 316 phantom entries leave
+every code length zero, so the alphabet is rejected and the body never runs; a
+member that reaches the body must have written its literal/length lengths for
+real, leaving at most `ndist` = 30 entries to overshoot. Measured, that path
+charges 31 past exhaustion and reports `truncated_input`. 318 is used anyway
+because it is a bound that needs no case analysis to stay true.
+
+### What this does to both caps
+
+Deriving to the reachable bound means neither cap can fire under a derived
+policy. Symbols cannot, because a decode cannot charge more than the input has
+bits plus the slack above. Work cannot, because
+`work = symbols + output + block work` and all three are separately guarded
+with the tighter check first at every shared charge site.
+
+Checked rather than asserted: 4,800 decodes over compressed, truncated and
+trailing members under policies naming neither key produced
+`invalid_stream`, `truncated_input`, `trailing_data`, `output_limit_exceeded`,
+`input_limit_exceeded`, `block_limit_exceeded` and success — and **zero** of
+either backstop. Adding explicit `max_symbols` policies to the same run brought
+`symbol_limit_exceeded` back 174 times, so the counters are alive.
+
+This is stated in `README.md` rather than left for someone to rediscover, and
+framed there as what it is: a cap sitting exactly on a bound is a tripwire. If
+a later change adds a charge site, stops charging one, or breaks the
+one-bit-per-decode property, the derived cap starts firing. The keys are still
+settable for anyone who wants to drive the decoder with them.
+
+### Outcome
+
+`LIMIT_PRESETS` carries the derived numbers, so a preset and a partial policy
+naming the same three budgets enforce the same two backstops:
+
+| preset     | `max_symbols` | `max_work_units` |
+| ---------- | ------------- | ---------------- |
+| `addon`    | 524,606       | 1,134,910        |
+| `generous` | 8,388,926     | 18,153,790       |
+
+Both keys remain explicitly settable and an explicit value is used as given.
+An explicit `max_symbols` also feeds the work derivation, so tightening one
+tightens the other.
+
+`tests/BenchTest.lua` carries literal copies of the preset numbers, for
+reference modules old enough to predate `LIMIT_PRESETS`, and cross-checks them
+against the shipped tables. They were updated in the same commit; the
+cross-check is what makes that not optional.
+
+### Differential gate
+
+The new values are a tightening, but to the reachable bound, so nothing the
+other three budgets admit changes outcome. Verified against `v1.3.0` at the
+default iteration count and at `LIBDEFLATEGUARD_FUZZ_ITERATIONS=12`: 13,246 and
+152,405 calls compared, **zero divergences**.
+
+The gate cannot see the slack question. It mutates and truncates members the
+compressor produced, and the shapes above are hand-built ones it will not
+generate — which is why they are pinned in `tests/GuardTest.lua` instead.
 
 ## What the differential harness does not cover
 

@@ -1084,6 +1084,119 @@ Test("dynamic header flood is charged exactly and refused by default",
               "exactly max_blocks must decode")
 end)
 
+-- Item J. max_symbols and max_work_units are backstops on the other three
+-- budgets rather than budgets a caller picks, so an omitted key derives from
+-- what the decoder can reach under the caps the caller did name. The rule is
+-- restated here rather than read off the module: a test that asks the module
+-- what it derives and then checks it derived that would pass on any rule.
+local function DerivedSymbols(max_input_bytes)
+  -- Every Huffman decode consumes at least one input bit, plus the decodes
+  -- that can still be charged after the input is exhausted -- one dynamic
+  -- code-length alphabet, nlen + ndist at most 286 + 30, and one
+  -- literal/length plus one distance symbol in the body.
+  return 8 * max_input_bytes + 286 + 30 + 2
+end
+
+local function DerivedWork(max_symbols, max_output_bytes, max_blocks)
+  -- One work unit per symbol, one per output byte, and per block one for the
+  -- block plus ncode + nlen + ndist at most 19 + 286 + 30 for a dynamic
+  -- header, which is 336.
+  return max_symbols + max_output_bytes + 336 * max_blocks
+end
+
+-- A dynamic block header cut off the instant its code-length loop begins.
+-- That loop does not test ReaderBitlenLeft() at all, so it decodes its whole
+-- alphabet -- nlen + ndist = 286 + 30 = 316 symbols -- off the end of a
+-- four-byte member. This is the shape the slack term above exists for: the
+-- member is malformed, and a backstop on decode volume must not be what
+-- reports it.
+local function TruncatedDynamicHeader()
+  local write, finish = BitWriter()
+  write(1, 1) -- BFINAL
+  write(2, 2) -- BTYPE 10, dynamic
+  write(286 - 257, 5) -- HLIT  -> nlen  = 286
+  write(30 - 1, 5) -- HDIST -> ndist = 30
+  write(4 - 4, 4) -- HCLEN -> ncode = 4
+  -- Four two-bit code-length codes, so every all-zero decode past the end of
+  -- the member yields code-length symbol 0 and advances the loop by one.
+  for _ = 1, 4 do write(2, 3) end
+  return finish()
+end
+
+Test("the derived backstops track the policy instead of a constant", function()
+  -- The shipped presets carry the derived numbers, so naming a preset and
+  -- writing out its three budgets enforce the same two backstops.
+  for _, name in ipairs({"addon", "generous"}) do
+    local preset = Guard.LIMIT_PRESETS[name]
+    local symbols = DerivedSymbols(preset.max_input_bytes)
+    AssertEqual(preset.max_symbols, symbols, name .. " max_symbols is derived")
+    AssertEqual(preset.max_work_units, DerivedWork(symbols,
+                                                   preset.max_output_bytes,
+                                                   preset.max_blocks),
+                name .. " max_work_units is derived")
+  end
+
+  -- The surprise this replaces. Raising input and output alone used to inherit
+  -- the addon work cap and refuse a member that both raised budgets admit,
+  -- reporting a limit the caller never named and could not see in its policy.
+  local payload = string.rep(
+                    "the quick brown fox jumps over the lazy dog 0123456789",
+                    40000)
+  local member = Guard:CompressDeflate(payload)
+  local raised = {
+    max_input_bytes = 64 * 1024 * 1024,
+    max_output_bytes = 64 * 1024 * 1024
+  }
+  local resolved = assert(Guard.WithPolicy(raised)):GetPolicy()
+  AssertEqual(resolved.max_symbols, DerivedSymbols(raised.max_input_bytes),
+              "a raised input cap raises the symbol backstop")
+  AssertEqual(resolved.max_work_units, DerivedWork(resolved.max_symbols,
+                                                   raised.max_output_bytes,
+                                                   resolved.max_blocks),
+              "a raised partial policy derives its work backstop")
+  AssertEqual(Guard:DecompressDeflate(member, raised), payload,
+              "a raised partial policy must not trip a backstop it never named")
+
+  -- Both keys stay explicitly settable, and an explicit value is used as
+  -- given rather than widened to the derived one.
+  AssertEqual(select(2, Guard:DecompressDeflate(member, {
+    max_input_bytes = 64 * 1024 * 1024,
+    max_output_bytes = 64 * 1024 * 1024,
+    max_symbols = 1
+  })), Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+              "an explicit max_symbols below the derived one still binds")
+  AssertEqual(select(2, Guard:DecompressDeflate(member, {
+    max_input_bytes = 64 * 1024 * 1024,
+    max_output_bytes = 64 * 1024 * 1024,
+    max_work_units = 1
+  })), Guard.ERRORS.WORK_LIMIT_EXCEEDED,
+              "an explicit max_work_units below the derived one still binds")
+
+  -- An explicit symbol budget is what the work backstop is derived from, so
+  -- tightening one tightens the other rather than leaving work above a bound
+  -- symbols can no longer reach.
+  local tightened = assert(Guard.WithPolicy({max_symbols = 5})):GetPolicy()
+  AssertEqual(tightened.max_symbols, 5, "an explicit symbol budget is kept")
+  AssertEqual(tightened.max_work_units,
+              DerivedWork(5, tightened.max_output_bytes, tightened.max_blocks),
+              "the work backstop follows an explicit symbol budget")
+
+  -- The slack term, at the tight edge. ReaderBitlenLeft() < 0 is tested after
+  -- a symbol is decoded, and not at all inside the code-length loop, so this
+  -- four-byte member charges 316 symbols against 32 input bits. Without the
+  -- slack the derived cap fires here and reports symbol_limit_exceeded on a
+  -- member whose fault is that it is malformed.
+  local truncated = TruncatedDynamicHeader()
+  AssertEqual(#truncated, 4, "the truncated header must stay four bytes")
+  for _, policy in ipairs({{max_input_bytes = #truncated}, "addon", "generous"}) do
+    local _, decode_error = Guard:DecompressDeflate(truncated, policy)
+    assert(decode_error ~= Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+           "a truncated header must not be reported as a symbol budget")
+    AssertEqual(decode_error, Guard.ERRORS.INVALID_STREAM,
+                "a truncated header is a malformed stream")
+  end
+end)
+
 -- Item H. LIMIT_PRESETS and DEFAULT_LIMITS are copies of the private limit
 -- tables, so writing to one cannot reach the module's own default path -- the
 -- tests above pin that. What it did reach was a policy a caller derives from
