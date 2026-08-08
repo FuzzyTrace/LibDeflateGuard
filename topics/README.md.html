@@ -349,19 +349,22 @@ LibDeflateGuard.LIMIT_PRESETS = {
 </span>    max_input_bytes = <span class="number">64</span> * <span class="number">1024</span>,
     max_output_bytes = <span class="number">512</span> * <span class="number">1024</span>,
     max_blocks = <span class="number">256</span>,
-    max_symbols = <span class="number">750000</span>,
-    max_work_units = <span class="number">1500000</span>,
-  },
+    max_symbols = <span class="number">524606</span>,        <span class="comment">-- derived, see below
+</span>    max_work_units = <span class="number">1134910</span>,    <span class="comment">-- derived, see below
+</span>  },
   generous = {
     max_input_bytes = <span class="number">1024</span> * <span class="number">1024</span>,
     max_output_bytes = <span class="number">8</span> * <span class="number">1024</span> * <span class="number">1024</span>,
     max_blocks = <span class="number">4096</span>,
-    max_symbols = <span class="number">10000000</span>,
-    max_work_units = <span class="number">25000000</span>,
-  },
+    max_symbols = <span class="number">8388926</span>,       <span class="comment">-- derived, see below
+</span>    max_work_units = <span class="number">18153790</span>,   <span class="comment">-- derived, see below
+</span>  },
 }
 </pre>
 
+
+<p>Three of the five are budgets you pick. The last two are backstops derived from
+them; see <code>### The two derived backstops</code>.</p>
 
 <p><code>addon</code> is the default because a decode on a game client runs on the frame
 thread, where a rejected message must not be felt. <code>generous</code> is for a server
@@ -380,8 +383,12 @@ invalid policy rather than a silent fallback to the defaults. Passing
 name is preferred because nothing another addon writes to the module table can
 reach it. See <code>### What mutation resistance covers</code>.</p>
 
-<p>A caller can also supply any table of its own; omitted keys fall back to the
-<code>addon</code> values. <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code> are for inspection.
+<p>A caller can also supply any table of its own. An omitted <code>max_input_bytes</code>,
+<code>max_output_bytes</code> or <code>max_blocks</code> falls back to the <code>addon</code> value; an omitted
+<code>max_symbols</code> or <code>max_work_units</code> is derived from whichever three you did
+supply, so raising a budget raises the backstops behind it. See
+<code>### The two derived backstops</code>. <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code> are for
+inspection.
 Writing to them changes nothing this module enforces — not the defaults, and
 not a policy you build by handing one of them back. To derive a policy from a
 preset, name the preset and write to the copy <code>GetPolicy()</code> hands you:</p>
@@ -421,7 +428,8 @@ one policy to an object that carries the whole budget:</p>
 
 <p>The instance accepts exactly the policy shapes the <code>limits</code> parameter accepts:
 a preset name, a <code>LIMIT_PRESETS</code> entry, a partial table whose omitted keys fall
-back to the <code>addon</code> defaults, or nothing at all. An invalid policy is reported
+back to the <code>addon</code> defaults or are derived from the ones it supplies, or
+nothing at all. An invalid policy is reported
 rather than raised, so the same code that reads a policy out of saved variables
 can check it:</p>
 
@@ -478,10 +486,71 @@ with <code>invalid_argument</code>. Use the instance, or name the intermediate v
 It does not remove them: <code>DecompressDeflate(str, limits)</code>,
 <code>DecodeForPrint(str, max_input_bytes)</code> and the rest are unchanged.</p>
 
+<h3>The two derived backstops</h3>
+
 <p><code>max_symbols</code> counts every Huffman decode attempt, including dynamic-header,
 literal/length, distance, and end-of-block symbols. <code>max_work_units</code> counts
 blocks, Huffman symbols, output bytes, and dynamic-table entries. It is a
 deterministic operation budget, not a wall-clock deadline.</p>
+
+<p><strong>Neither is a budget to tune independently.</strong> Both are backstops on the other
+three, and when you omit them they are derived from what the decoder can
+actually reach under the caps you did set:</p>
+
+<pre><code> max_symbols    = 8 * max_input_bytes + 318
+ max_work_units = max_symbols + max_output_bytes + 336 * max_blocks
+</code></pre>
+
+
+<p>Every term traces to the decoder. A Huffman decode consumes at least one input
+bit and charges one symbol, so the input cap bounds the symbol count — loosely
+for zlib, whose two header bytes and four Adler bytes are not deflate bits.
+Work charges one unit per symbol, one per output byte, one per block, and one
+per dynamic-header table entry, which RFC 1951 bounds at
+<code>ncode + nlen + ndist</code> ≤ 19 + 286 + 30 = 335, so 336 per block with the block
+itself.</p>
+
+<p>The <code>318</code> is slack for a truncated member. The decoder tests for exhausted
+input after decoding a symbol, and its code-length loop does not test at all,
+so a member cut short can charge one dynamic alphabet — <code>nlen + ndist</code> ≤ 286 +
+30 — plus one literal/length and one distance symbol past the end of its own
+input. Without the slack a truncated member is reported as
+<code>symbol_limit_exceeded</code>, which is a budget answering for something that is not
+a budget problem.</p>
+
+<p>This matters when you raise a budget. Before, both keys held fixed constants,
+so raising input and output alone left a work cap sized for the default policy:</p>
+
+
+<pre>
+LibDeflateGuard:DecompressDeflate(member, {
+  max_input_bytes = <span class="number">64</span> * <span class="number">1024</span> * <span class="number">1024</span>,
+  max_output_bytes = <span class="number">64</span> * <span class="number">1024</span> * <span class="number">1024</span>,
+})
+<span class="comment">-- before: work_limit_exceeded, from a cap the policy never named
+</span><span class="comment">-- now:    decodes, because both backstops moved with the budgets</span>
+</pre>
+
+
+<p>A consequence worth stating plainly, because it is what "backstop" means here:
+both caps are derived to exactly what the other three make reachable, so
+**neither <code>symbol_limit_exceeded</code> nor <code>work_limit_exceeded</code> can occur under a
+derived policy.** The symbol cap is not reachable because a decode cannot
+charge more symbols than the input has bits, and the work cap is not reachable
+because work is the sum of three quantities that are each checked first at
+every shared charge site. Input, output or blocks answers instead.</p>
+
+<p>That is not dead code. A cap sitting exactly on a bound is a tripwire: if a
+future change adds a charge site, stops charging one, or breaks the
+one-bit-per-decode property these rest on, the derived cap starts firing and
+says so. Both are still reported when you set them yourself, which is how the
+boundary vectors in <code>tests/GuardTest.lua</code> and the incremental-decode prototype
+drive the decoder.</p>
+
+<p>Both keys remain fully settable and an explicit value is used exactly as given,
+in either direction. An explicit <code>max_symbols</code> also feeds the work derivation,
+so tightening one tightens the other rather than leaving a work cap above a
+bound symbols can no longer reach.</p>
 
 <p>The complete input string counts toward <code>max_input_bytes</code>. A valid compressed
 member followed by one or more complete bytes fails with <code>trailing_data</code>.

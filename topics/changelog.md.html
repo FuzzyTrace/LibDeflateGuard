@@ -109,9 +109,101 @@
   the suite, because every other assertion compares through <code>ERRORS</code>.</p>
 
 <ul>
-    <li><strong>No functional change.</strong> The only edit to <a href="../source/LibDeflateGuard.lua.html#">LibDeflateGuard.lua</a> is a
-    comment. The differential harness reports zero divergences against v1.3.0.</li>
+    <li><p><strong>No functional change.</strong> The only edit to <a href="../source/LibDeflateGuard.lua.html#">LibDeflateGuard.lua</a> is a
+    comment. The differential harness reports zero divergences against v1.3.0.</p></li>
+    <li><p><strong>Changed.</strong> <code>max_symbols</code> and <code>max_work_units</code> are now derived from the
+    other three budgets when they are omitted, instead of holding constants that
+    no policy could move.</p></li>
 </ul>
+
+<p>  External review found, and two independent investigations confirmed, that
+  <strong>neither budget could fire at either shipped preset.</strong> Every Huffman decode
+  consumes at least one input bit and every literal produces one output byte,
+  so the input and output caps already bound both counters far below the
+  numbers the presets carried:</p>
+
+<p>  | preset     | symbol cap | reachable | work cap   | reachable  |
+  | ---------- | ---------- | --------- | ---------- | ---------- |
+  | <code>addon</code>    | 750,000    | 524,288   | 1,500,000  | 1,134,592  |
+  | <code>generous</code> | 10,000,000 | 8,388,608 | 25,000,000 | 18,153,472 |</p>
+
+<p>  The root cause was not the gap but the absence of a derivation: <code>750000</code> and
+  <code>1500000</code> appeared nowhere with a justification, so there was nothing to
+  check them against and nothing to move them by. What that cost a caller was a
+  limit they never named:</p>
+
+<p>  ```lua
+  LibDeflateGuard:DecompressDeflate(member, {</p>
+
+<pre>
+max_input_bytes = <span class="number">64</span> * <span class="number">1024</span> * <span class="number">1024</span>,
+max_output_bytes = <span class="number">64</span> * <span class="number">1024</span> * <span class="number">1024</span>,
+</pre>
+
+<p>  })
+  -- before: work<em>limit</em>exceeded, from the addon work cap the policy inherited
+  -- now:    decodes
+  ```</p>
+
+<p>  Both budgets the caller wrote admit the member. It was refused by a third
+  they could not see in their own policy and had no way to size.</p>
+
+<p>  Omitted keys now derive, with every term traced to a charge site in the
+  decoder:</p>
+
+<p>  ```
+  max<em>symbols    = 8 * max</em>input<em>bytes + 318
+  max</em>work<em>units = max</em>symbols + max<em>output</em>bytes + 336 * max_blocks
+  ```</p>
+
+<p>  The <code>318</code> is slack for a truncated member, and it is not decoration. The
+  decoder tests for exhausted input <em>after</em> decoding a symbol, and its
+  code-length loop does not test at all, so a member cut short charges symbols
+  past the end of its own input. Constructed rather than argued: a four-byte
+  dynamic header cut at the code-length loop charges 316 symbols against 32
+  input bits, and a 64 KiB member built from one-bit literal codes charges
+  524,501 against the <code>addon</code> cap of 524,288. Without the slack that member is
+  reported as <code>symbol_limit_exceeded</code> <strong>at the shipped default</strong>, which is a
+  budget answering for a malformed stream. <code>318 = 286 + 30 + 2</code> bounds it: one
+  dynamic code-length alphabet, plus one literal/length and one distance symbol
+  in the body, and nothing can follow because the exhaustion test never passes
+  again once it has failed.</p>
+
+<p>  <code>LIMIT_PRESETS</code> carries the derived numbers, so a preset and a partial policy
+  naming the same three budgets enforce the same two backstops: <code>addon</code> is now
+  524,606 and 1,134,910, <code>generous</code> 8,388,926 and 18,153,790.</p>
+
+<p>  <strong>Both keys remain fully settable and there is no API break.</strong> An explicit
+  value is used exactly as given, in either direction; only the fallback
+  changed. An explicit <code>max_symbols</code> also feeds the work derivation, so
+  tightening one tightens the other.</p>
+
+<p>  One consequence is stated in <a href="../topics/README.md.html#">README.md</a> rather than left to be
+  rediscovered. Because both caps are now derived to exactly what the other
+  three make reachable, neither <code>symbol_limit_exceeded</code> nor
+  <code>work_limit_exceeded</code> can occur under a derived policy — input, output or
+  blocks answers instead. That is what makes them backstops rather than
+  budgets, and it is not dead code: a cap sitting exactly on a bound fires if a
+  later change adds a charge site, stops charging one, or breaks the
+  one-bit-per-decode property they rest on. Both are still reported when a
+  caller sets them.</p>
+
+<p>  Deletion of the two counters was considered and rejected. A variant with both
+  stripped from the hot loop was benchmarked over nine <code>-joff</code> runs plus one at
+  101 rounds: the deflate rows read +4.0% and +5.3% median and were positive on
+  9 of 9 runs, but cleared their own spread on only 2 of 9, against control
+  rows scattering ±3%. By the standard <code>tests/BenchTest.lua</code> prints under every
+  table, that delta is inside the floor and <strong>is not quoted as a figure</strong>.
+  Beyond the unmeasurable cost, removing the keys would make <code>{max_symbols = …}</code> an <code>invalid_argument</code> and break the <code>GetPolicy()</code> round-trip idiom this
+  README recommends, and would delete a tripwire the boundary vectors in
+  <code>tests/GuardTest.lua</code> and the incremental-decode prototype both rely on.</p>
+
+<p>  The differential harness reports zero divergences against v1.3.0, over 13,246
+  and 152,405 compared calls. <code>tests/GuardTest.lua</code> pins the derivation, the
+  partial-policy case, explicit settability in both directions, and the
+  truncated-header edge the slack exists for. <code>tests/BenchTest.lua</code> carries
+  literal copies of the preset numbers for old reference modules and
+  cross-checks them against the shipped tables; they were updated with it.</p>
 
 <h3>LibDeflateGuard v1.3.0</h3>
 
