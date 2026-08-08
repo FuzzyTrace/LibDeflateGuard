@@ -115,8 +115,10 @@ assert(decompress_zlib_with_dict == example_input)
 -- The instance derives the codec input caps and the compression input cap
 -- from the policy's max_input_bytes, so they cannot drift apart, and its
 -- methods nest directly because they take no trailing cap argument.
-local guard = assert(LibDeflateGuard.WithPolicy(
-                       LibDeflateGuard.LIMIT_PRESETS.generous))
+-- The preset is named rather than read out of LIMIT_PRESETS: a name resolves
+-- against a private table, so nothing another addon writes to the module
+-- table can alter what this instance enforces.
+local guard = assert(LibDeflateGuard.WithPolicy("generous"))
 
 assert(guard:DecompressDeflate(guard:CompressDeflate(example_input)) ==
          example_input)

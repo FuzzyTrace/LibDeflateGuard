@@ -89,8 +89,12 @@ decompressed before can now return `nil, "output_limit_exceeded"`. Raise it
 deliberately rather than by accident:
 
 ```lua
-local guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+local guard = LibDeflateGuard.WithPolicy("generous")
 ```
+
+Name the preset rather than passing `LIMIT_PRESETS.generous`. Both work and
+resolve to the same numbers, but a name is the shape nothing another addon
+writes to the module table can alter. See `### What mutation resistance covers`.
 
 Know what that costs. The default `addon` preset's worst accepted call is 10 to
 15 ms, which is inside one frame at 60 fps with little to spare. Under
@@ -253,17 +257,37 @@ LibDeflateGuard.LIMIT_PRESETS = {
 
 `addon` is the default because a decode on a game client runs on the frame
 thread, where a rejected message must not be felt. `generous` is for a server
-or desktop tool that can afford a longer stall:
+or desktop tool that can afford a longer stall. Name it:
 
 ```lua
 local output, decode_error =
-  LibDeflateGuard:DecompressDeflate(compressed,
-                                    LibDeflateGuard.LIMIT_PRESETS.generous)
+  LibDeflateGuard:DecompressDeflate(compressed, "generous")
 ```
 
+`"addon"` and `"generous"` are the only names, and an unrecognised one is an
+invalid policy rather than a silent fallback to the defaults. Passing
+`LibDeflateGuard.LIMIT_PRESETS.generous` is equivalent and still supported; the
+name is preferred because nothing another addon writes to the module table can
+reach it. See `### What mutation resistance covers`.
+
 A caller can also supply any table of its own; omitted keys fall back to the
-`addon` values. `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies.
-Mutating them does not alter the private defaults enforced by the decoder.
+`addon` values. `DEFAULT_LIMITS` and `LIMIT_PRESETS` are for inspection.
+Writing to them changes nothing this module enforces — not the defaults, and
+not a policy you build by handing one of them back. To derive a policy from a
+preset, name the preset and write to the copy `GetPolicy()` hands you:
+
+```lua
+local policy = LibDeflateGuard.WithPolicy("generous"):GetPolicy()
+policy.max_output_bytes = 4096
+local guard = LibDeflateGuard.WithPolicy(policy)
+```
+
+`GetPolicy()` returns a fresh copy of the private numbers the name resolved
+to, so the derivation starts from values nothing written to the module table
+can reach. Reading a shipped entry's _contents_ and copying them by hand —
+`for key, value in pairs(LIMIT_PRESETS.generous)` — starts from whatever that
+table holds when you read it, and carries a write to it into your copy. See
+`### What mutation resistance covers`.
 
 These are per-call budgets. Bounding a _stream_ of messages needs the caller's
 transport context and remains the caller's job.
@@ -275,17 +299,17 @@ decode, is the shape that has to be kept in step by hand. `WithPolicy` binds
 one policy to an object that carries the whole budget:
 
 ```lua
-local guard = LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
+local guard = LibDeflateGuard.WithPolicy("generous")
 
 local payload = guard:DecodeForPrint(pasted)
 local message = guard:DecompressDeflate(payload)
 ```
 
 The instance accepts exactly the policy shapes the `limits` parameter accepts:
-a `LIMIT_PRESETS` entry, a partial table whose omitted keys fall back to the
-`addon` defaults, or nothing at all. An invalid policy is reported rather than
-raised, so the same code that reads a policy out of saved variables can check
-it:
+a preset name, a `LIMIT_PRESETS` entry, a partial table whose omitted keys fall
+back to the `addon` defaults, or nothing at all. An invalid policy is reported
+rather than raised, so the same code that reads a policy out of saved variables
+can check it:
 
 ```lua
 local guard, policy_error = LibDeflateGuard.WithPolicy(user_policy)
@@ -315,7 +339,8 @@ add an error path to functions that have none.
 `GetPolicy()` and `GetCodecLimits()` return fresh copies of the enforced
 numbers. Like `LIMIT_PRESETS` and `DEFAULT_LIMITS` they are for inspection:
 mutating what they return, or mutating the table originally passed to
-`WithPolicy`, cannot change what the instance enforces.
+`WithPolicy`, cannot change what the instance enforces. Nor can mutating a
+`LIMIT_PRESETS` entry before the call.
 
 The bound decoders take no policy or cap argument, and ignore anything passed
 after the ones documented above. That is deliberate. A compressor answers with
@@ -502,10 +527,14 @@ figures reproduce exactly: all ten runs printed the same six numbers.
 **Which call shape the deflate rows measured.** The harness passes an explicit
 `LIMIT_PRESETS.addon` table on every one of this module's decompress calls,
 which is a shape upstream has no analogue for: resolving a supplied policy
-means two short walks over a five-key table and one table allocation per call,
+meant two short walks over a five-key table and one table allocation per call,
 none of which upstream does. The table above is therefore the cost of the
 explicit-policy call shape, and it is worth saying so rather than leaving a
-reader to assume the plainest call was the one timed.
+reader to assume the plainest call was the one timed. A shipped preset table
+now resolves in one lookup instead — see `### What mutation resistance covers`
+— so these figures were measured against the more expensive path and bound the
+current one from above. A policy table of your own still costs the two walks
+and the allocation.
 
 Measured, that argument turns out to cost almost nothing. Paired inside one
 process, 41 alternated rounds, `DecompressDeflate(str, policy)` against
@@ -679,8 +708,26 @@ Within one Lua state, this module resists a consumer that writes to the
 
 - `ERRORS`, `DEFAULT_LIMITS` and `LIMIT_PRESETS` are inspection copies rather
   than the private tables the module resolves against, so mutating them cannot
-  change what the module's own default path enforces. Read the bullet below on
-  what that does not extend to.
+  change what the module's own default path enforces.
+- **A write to a shipped limit table cannot reach a policy you derive by
+  handing that table back.** `DEFAULT_LIMITS` and both `LIMIT_PRESETS` entries
+  are registered against the private table each one names, and the policy
+  validator resolves a registered table from that private source rather than
+  from the table's contents. So `LIMIT_PRESETS.generous.max_output_bytes = 4096`
+  followed by `WithPolicy(LIMIT_PRESETS.generous)` enforces 8 MiB, and the write
+  that hands an `addon` instance a 512 MB output cap is inert in the same way.
+  They stay ordinary tables: `pairs()`, `next()`, table identity and use as a
+  table key all behave as before, which per-access copies would have broken.
+  What is anchored is the table, not the values you read out of one; deriving a
+  policy from `WithPolicy("generous"):GetPolicy()` is the shape that starts
+  from the private numbers, and the list below names the shape that does not.
+- **A preset named by string is beyond reach entirely.**
+  `WithPolicy("generous")` and `DecompressDeflate(str, "addon")` resolve
+  against a private table through a value nothing can write to. Identity
+  anchors a table this module handed out; it cannot anchor one a consumer put
+  in its place, so `LIMIT_PRESETS.generous = {max_output_bytes = 4096}` still
+  yields a table this module cannot tell from a policy you wrote. Name the
+  preset and that stops mattering.
 - The Adler-32 check the zlib decoder verifies a member with is bound
   privately, rather than read back off the module table at call time.
 - The two World of Warcraft channel codecs are built by a private constructor,
@@ -693,26 +740,40 @@ Within one Lua state, this module resists a consumer that writes to the
 
 What it does not cover:
 
-- **A preset is an inspection copy, not a read-only one, and a policy derived
-  from a mutated preset carries the mutation.** `LIMIT_PRESETS.generous` is one
-  table built at load time and hung on the public module table, and
-  `## Migrating from LibDeflate` tells you to hand that entry straight to
-  `WithPolicy`. The copy is made once, so the read a caller performs is a read
-  of whatever is in the table by then:
+- **Replacing a whole entry is not a mutation this module can see.**
+  `LIMIT_PRESETS.generous = {max_output_bytes = 4096}` puts a table there that
+  is indistinguishable from one you wrote yourself, and a caller who then reads
+  it back and passes it gets what it says. So does replacing `LIMIT_PRESETS`
+  outright. An entry can also be substituted with _another shipped preset_ —
+  `LIMIT_PRESETS.addon = LIMIT_PRESETS.generous` — and that table is
+  registered, so it is not merely unrecognised: it resolves canonically, to the
+  wrong preset's private numbers, and a caller who names nothing gets
+  `generous`'s 8 MiB where it asked for `addon`'s 512 KiB. This is the same
+  class as replacing `WithPolicy` itself, and it has the same answer: name the
+  preset, or write your numbers out.
+
+- **Reading a shipped table's contents and copying them by hand is outside
+  what identity can anchor.** Identity intercepts a shipped table you hand
+  back; it cannot intercept values you have already read out of one. So
 
   ```lua
-  LibDeflateGuard.LIMIT_PRESETS.generous.max_output_bytes = 4096
-  local guard =
-    LibDeflateGuard.WithPolicy(LibDeflateGuard.LIMIT_PRESETS.generous)
-  -- the instance enforces 4096, not 8 MiB
+  local policy = {}
+  for key, value in pairs(LibDeflateGuard.LIMIT_PRESETS.generous) do
+    policy[key] = value
+  end
   ```
 
-  It loosens as readily as it tightens: the same write can hand an `addon`
-  instance a 512 MB output cap. What the copy stops is a mutation reaching the
-  module's own defaults. What it does not stop is one reaching an instance a
-  caller builds out of a preset, or a table a caller passes as `limits`. Write
-  the numbers out, or copy the entry yourself, if that matters to you. Item H
-  in `dev_docs/roadmap.md` proposes closing it.
+  copies whatever a consumer wrote to that entry into a table of your own,
+  which is then enforced exactly as written, because it _is_ a policy you
+  wrote. Derive from `WithPolicy("generous"):GetPolicy()` instead, as
+  `## Safe decoding` shows: that copy is made from the private numbers a name
+  resolved to, not from the exported table.
+
+- **`DEFAULT_CODEC_LIMITS` is scalars, and identity anchors nothing.** A caller
+  who reads `DEFAULT_CODEC_LIMITS.print_max_input_bytes` and passes it to
+  `DecodeForPrint` passes a number, and this module cannot tell that number
+  from any other. Omit the cap to get the private default, or use a
+  `WithPolicy` instance, whose codec decoders take no cap at all.
 
 - A `WithPolicy` instance is an ordinary table. Anything holding it can replace
   its _methods_; only the policy is sealed.

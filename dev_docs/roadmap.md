@@ -10,7 +10,8 @@ artifact. Tick items off here as they land.
 
 Items A–D were agreed after the v1.1.2 regression fixes. Items E–G were agreed
 after an external review of the whole fork against upstream `afc3b78`, and
-shipped in v1.2.1.
+shipped in v1.2.1. Item H was found by review of item G's documentation; it is
+done and unreleased, and is a minor version because it changes behaviour.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
@@ -21,7 +22,7 @@ shipped in v1.2.1.
 | E   | Close the channel-codec constructor seam        | done       |
 | F   | Benchmark harness against a reference module    | done       |
 | G   | Document performance, migration, and scope      | done       |
-| H   | Preset mutation carries into a derived policy   | planned    |
+| H   | Preset mutation carries into a derived policy   | done       |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -681,7 +682,7 @@ multiplier is real at 512 KiB and falls at 8 MiB, because the 32768-byte
 sliding window is a fixed cost. Corrected, with the measurement, in
 `## Safe decoding`.
 
-## H. Preset mutation carries into a derived policy — planned
+## H. Preset mutation carries into a derived policy — done
 
 Found by review of item G's documentation, not by a test. The `README.md`
 `## Security scope` bullet has been corrected to state the limit precisely;
@@ -750,6 +751,114 @@ boundary against a hostile addon.
 Deciding it is the work. Do not land the code change without deciding whether
 the identity break is acceptable, and if it is, say so in `## Security scope`
 and in the migration section rather than leaving a reader to discover it.
+
+### Outcome
+
+Neither of the two options above shipped. The identity break option 1 pays for
+is not necessary: what the fix needs is for a mutation not to be _read_, and a
+per-access copy is only one way to get that. The other is to stop reading the
+exported table at all.
+
+**What landed is a third option: anchor on identity rather than replace it.**
+Each exported limit table is registered at load time against the private table
+it names, in a private map, and `ResolveDecompressLimits` resolves a registered
+table from that private source instead of from its contents:
+
+```lua
+local canonical = _canonical_decompress_limits[limits]
+if canonical then return canonical end
+```
+
+Two lines in the validator and a registration helper beside `LIMIT_PRESETS`.
+Every property option 1 would have cost survives: the exported tables are
+still ordinary tables with real fields, so `pairs()` and `next()` enumerate
+them, `LIMIT_PRESETS.generous == LIMIT_PRESETS.generous`, a preset still works
+as a table key, and no allocation happens per access. That mattered more than
+it looked: `tests/FuzzTest.lua` iterates `DEFAULT_LIMITS`, `tests/GuardTest.lua`
+iterates both `LIMIT_PRESETS` and a preset, and `tests/BenchTest.lua` indexes
+presets by name. Option 1 would have broken all of them, and — the reason it
+cannot be papered over — silently, because `pairs()` over an empty table with
+an `__index` yields nothing and Lua 5.1 and LuaJIT have no `__pairs`. It is
+also marginally _faster_ than what it replaced, since a registered table skips
+the two five-key walks and the table allocation the validator does otherwise.
+The README's benchmark note on the explicit-policy call shape was corrected to
+say so; the published figures were measured on the more expensive path and now
+bound the current one from above.
+
+**Registration does not close the whole hole, and a second change does.**
+Identity anchors a table this module handed out. It cannot anchor one a
+consumer put in its place: `LIMIT_PRESETS.generous = {max_output_bytes = 4096}`
+is the same one-liner and yields a table indistinguishable from a policy the
+caller wrote. So the decompressors and `WithPolicy` now also accept a preset
+_name_ — `"addon"` or `"generous"`, the vocabulary `--limits` already used —
+resolved against a private table through a value that cannot be mutated at all.
+That is the shape `README.md` and `examples/example.lua` now recommend, and it
+is what lets `## Security scope` state the strong form rather than a qualified
+one. An unrecognised name is `invalid_argument`, not a silent fall back to the
+defaults, so the two `bad_policies` lists that already pass `"not a table"`
+keep passing unchanged.
+
+**What it costs, recorded because it is a behaviour change.** Writing to a
+shipped limit table no longer customises anything. That write was never a
+supported customisation channel — the tables have been documented as
+inspection copies since v1.1.0 — but it was honoured by a policy built
+afterwards, which is precisely the defect. A caller who was using one
+deliberately must derive from `WithPolicy("generous"):GetPolicy()`, which is
+what `## Safe decoding` now shows. A key the module has no meaning for is no longer
+a policy error when it is written onto a shipped table either: the contents are
+not read, so nothing written there can be rejected any more than it can be
+enforced. A caller's own table is validated exactly as before.
+
+`DEFAULT_CODEC_LIMITS` was considered and deliberately left alone. It carries
+scalars, and the codec decoders take a number; identity can anchor a table a
+caller hands back but not a number a caller read out of one. The shape that
+resolves privately there already exists — omit the cap, or use a `WithPolicy`
+instance, whose codec decoders take none — and `## Security scope` says so
+rather than implying the table is anchored. `ERRORS` is never handed back to
+this module as an argument at all, so it needs no registration.
+
+No decode output changes: the differential gate reports zero divergences
+against v1.2.1 over 13246 compared calls.
+
+### What review found afterwards, and what changed for it
+
+An adversarial review of the pull request could not break the resolver. It
+broke the documentation around it, in one place that mattered.
+
+`README.md` stated that a write to a shipped limit table cannot reach a policy
+derived from it, and then, four hundred lines earlier, told a caller to derive
+one with `for key, value in pairs(LIMIT_PRESETS.generous)`. That loop reads the
+exported table's **contents**. Identity anchors the table, not the values read
+out of it, so the copy starts from the poison and is then enforced exactly as
+written — it is a policy the caller wrote, and nothing about it is
+distinguishable from one. The claim and the recipe on the same page could not
+both be true. `changelog.md` compounded it by pointing anyone broken by the
+behaviour change at that same loop as the migration path, and this section
+endorsed it by reference.
+
+The recipe was replaced rather than the claim retracted. A poison-free
+derivation already shipped: `WithPolicy("generous"):GetPolicy()` returns a copy
+of the private numbers a name resolved to, so the write to the copy starts from
+values nothing on the module table can reach. `README.md`, `changelog.md` and
+the paragraph above now show that shape, and `## Security scope` names the
+hand-rolled `pairs()` copy under what mutation resistance does not cover — the
+recommended path had to become safe _and_ the unsafe path had to be named, or
+the next caller writes the loop from memory. `tests/GuardTest.lua` pins the new
+idiom on a real decode outcome rather than on what `GetPolicy()` reports.
+
+Review also sharpened the entry-substitution bullet. It described a replaced
+entry as "indistinguishable from one you wrote yourself", which is right for a
+fabricated table and understates the cheapest variant:
+
+```lua
+LibDeflateGuard.LIMIT_PRESETS.addon = LibDeflateGuard.LIMIT_PRESETS.generous
+```
+
+That table is registered, so it is not one the module fails to recognise — it
+is one the module positively blesses, resolving canonically to `generous`'s
+private numbers and handing a victim 8 MiB where it asked for 512 KiB. The net
+effect stays inside the documented class and the answer is unchanged, so this
+is a clause rather than a new bullet.
 
 ## What the differential harness does not cover
 
