@@ -186,6 +186,10 @@ returns <code>nil</code> and a stable code from <code>LibDeflateGuard.ERRORS</co
 existing <a href="https://www.lua.org/manual/5.1/manual.html#pdf-pcall">pcall</a> wrapper around a decode still works and is now dead code:
 there is nothing left for it to catch.</p>
 
+<p>When you write the comparison that replaces it, compare against the string
+literal rather than against <code>LibDeflateGuard.ERRORS</code>. <code>## Safe decoding</code> lists
+the codes and says why.</p>
+
 <p>Compressors, encoders and <code>CreateDictionary</code> are unchanged and still raise on a
 programmer error.</p>
 
@@ -317,11 +321,23 @@ project. They intentionally contain no standalone addon TOC.</p>
 </ul>
 
 <p>Success returns the decoded string and numeric status <code>0</code>, preserving the
-upstream success tuple. Failure returns <code>nil</code> and one of the strings in
-<code>LibDeflateGuard.ERRORS</code>. The stable error codes include
-invalid arguments, input/output/work/block/symbol limit exhaustion, trailing
-data, truncation, invalid streams, checksum or dictionary failures, invalid
-codec input, and contained internal exceptions.</p>
+upstream success tuple. Failure returns <code>nil</code> and one of fifteen stable
+strings, which are the values of <code>LibDeflateGuard.ERRORS</code> and are the complete
+set:</p>
+
+<p><code>invalid_argument</code>, <code>input_limit_exceeded</code>, <code>output_limit_exceeded</code>,
+<code>work_limit_exceeded</code>, <code>block_limit_exceeded</code>, <code>symbol_limit_exceeded</code>,
+<code>trailing_data</code>, <code>truncated_input</code>, <code>invalid_stream</code>, <code>checksum_mismatch</code>,
+<code>dictionary_required</code>, <code>dictionary_mismatch</code>, <code>invalid_escape</code>,
+<code>invalid_print</code>, <code>internal_error</code>.</p>
+
+<p>Compare against the literal — <code>decode_error == &quot;output_limit_exceeded&quot;</code> —
+rather than against <code>LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED</code>. The two are
+the same string today. The difference is that the code a decode <em>returns</em> comes
+from a private table and cannot be changed by anything in the Lua state, while
+<code>ERRORS</code> is an ordinary writable field on a public module table, so the
+comparison is the half another addon can break. A copy captured at load works
+too. See <code>### What mutation resistance covers</code>.</p>
 
 <p>All limits are positive integer byte or work counts. Omitted keys use the
 defaults. Two presets ship with the library:</p>
@@ -520,10 +536,9 @@ points therefore accept an optional cap in their existing configuration table:</
 A malformed cap — the wrong type, zero, negative, fractional, infinite —
 raises, exactly as every other malformed compression argument does. An input
 that merely exceeds a well-formed cap is a runtime outcome, not a programmer
-error, so it returns <code>nil</code> plus
-<code>LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED</code>, the same shape the decode path
-uses. Both paths return exactly two values, so no caller's argument list
-changes shape.</p>
+error, so it returns <code>nil</code> plus <code>&quot;input_limit_exceeded&quot;</code>, the same shape the
+decode path uses. Both paths return exactly two values, so no caller's argument
+list changes shape.</p>
 
 <p>A policy instance derives this cap from its own <code>max_input_bytes</code>, so
 <code>guard:CompressDeflate(str)</code> is capped without a configuration table. Note
@@ -834,9 +849,19 @@ time your client spends in this library.</p>
 <code>LibDeflateGuard</code> table:</p>
 
 <ul>
-    <li><code>ERRORS</code>, <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code> are inspection copies rather
-    than the private tables the module resolves against, so mutating them cannot
-    change what the module's own default path enforces.</li>
+    <li><code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code> are inspection copies rather than the
+    private tables the module resolves against, so mutating them cannot change
+    what the module's own default path enforces.</li>
+    <li>**The code a decode returns is stable. The <code>ERRORS</code> table you compare it
+    against is not.** Every failure path reads a private table, so after
+    <code>LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED = &quot;x&quot;</code> an over-budget decode
+    still returns <code>&quot;output_limit_exceeded&quot;</code> — the write cannot change the
+    outcome, the reason reported, or the code any other consumer receives. What
+    it does break is <code>err == LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED</code>,
+    because that read is the consumer's and runs against a writable field. The
+    codes are documented stable strings for exactly this reason: compare against
+    the literal, or against a copy you captured at load. The list below says why
+    this one cannot be closed the way the limit tables were.</li>
     <li><strong>A write to a shipped limit table cannot reach a policy you derive by
     handing that table back.</strong> <code>DEFAULT_LIMITS</code> and both <code>LIMIT_PRESETS</code> entries
     are registered against the private table each one names, and the policy
@@ -909,6 +934,20 @@ policy[key] = value
     <code>DecodeForPrint</code> passes a number, and this module cannot tell that number
     from any other. Omit the cap to get the private default, or use a
     <code>WithPolicy</code> instance, whose codec decoders take no cap at all.</p></li>
+    <li><p>**<code>ERRORS</code> is writable, and no mechanism here can anchor it.** Identity
+    anchoring works on the limit tables because <em>this module</em> does the reading: a
+    table handed back to the policy validator is resolved from private storage
+    instead of from its contents, so the write is never read. Error codes are
+    read by the <em>consumer</em>, and there is nothing of this module's in the way. One
+    line from another addon —
+    <code>LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED = &quot;x&quot;</code>, or <code>ERRORS = {}</code> —
+    makes every <code>err == LibDeflateGuard.ERRORS.OUTPUT_LIMIT_EXCEEDED</code> in the
+    state answer false, and a consumer that branches on it takes the wrong
+    branch while the decode underneath it reports correctly. A resolver function
+    on the module table would not close this either: a consumer would have to
+    read <em>that</em> off the same writable table, so it would be one more thing to
+    overwrite rather than a private path. The string literal is the shape nothing
+    can reach, and it is what <code>## Safe decoding</code> documents.</p></li>
     <li><p>A <code>WithPolicy</code> instance is an ordinary table. Anything holding it can replace
     its <em>methods</em>; only the policy is sealed.</p></li>
     <li><p><code>LibDeflateGuard.internals</code> is test-only and writable.</p></li>

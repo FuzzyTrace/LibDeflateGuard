@@ -189,8 +189,12 @@ freely, subject to the following restrictions:
 </span><span class="keyword">local</span> refused, compress_error = LibDeflateGuard:CompressDeflate(
                                   <span class="global">string</span>.rep(<span class="string">"x"</span>, <span class="number">4096</span>),
                                   {max_input_bytes = <span class="number">1024</span>})
-<span class="global">assert</span>(refused == <span class="keyword">nil</span>)
-<span class="global">assert</span>(compress_error == LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED)</pre>
+<span class="comment">-- Compared against the literal rather than against
+</span><span class="comment">-- LibDeflateGuard.ERRORS.INPUT_LIMIT_EXCEEDED. The returned code comes from a
+</span><span class="comment">-- private table and is stable; the public ERRORS table is writable, so a
+</span><span class="comment">-- comparison through it is the half another addon can break.
+</span><span class="global">assert</span>(refused == <span class="keyword">nil</span>)
+<span class="global">assert</span>(compress_error == <span class="string">"input_limit_exceeded"</span>)</pre>
 
 
 </div> <!-- id="content" -->

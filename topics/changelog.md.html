@@ -53,6 +53,66 @@
 <div id="content">
 
 
+<h3>LibDeflateGuard unreleased</h3>
+
+<ul>
+    <li><strong>Corrected.</strong> <a href="../topics/README.md.html#">README.md</a> <code>### What mutation resistance covers</code> listed
+    <code>ERRORS</code> in the same sentence as <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code>, as an
+    inspection copy whose mutation cannot change what the module enforces. v1.3.0
+    made that a strong claim for the two limit tables by anchoring them on
+    identity. <code>ERRORS</code> did not get that protection and cannot get it, and leaving
+    it in that sentence implied otherwise.</li>
+</ul>
+
+<p>  Half the claim holds and is worth stating on its own: every failure path
+  reads a private table, so a write to <code>LibDeflateGuard.ERRORS</code> cannot change
+  the code a decode returns, the outcome it reports, or what any other consumer
+  receives. The half that does not hold is the comparison:</p>
+
+<p>  ```lua
+  LibDeflateGuard.ERRORS.OUTPUT<em>LIMIT</em>EXCEEDED = "x"
+  local output, err = LibDeflateGuard:DecompressDeflate(bomb, "addon")
+  -- err is still "output<em>limit</em>exceeded"
+  -- err == LibDeflateGuard.ERRORS.OUTPUT<em>LIMIT</em>EXCEEDED is now false
+  ```</p>
+
+<p>  One line from another addon in the shared Lua state, and every consumer that
+  branches through the table takes the wrong branch while the decode underneath
+  it reports correctly.</p>
+
+<p>  <strong>No code fix applies, and that is the point of the correction rather than an
+  excuse for it.</strong> Identity anchoring works on the limit tables because <em>this
+  module</em> performs the read: a table handed back to the policy validator is
+  resolved from private storage instead of from its contents. An error code is
+  read by the <em>consumer</em>, so there is nothing of this module's in the way to
+  intercept. A resolver function on the module table would be read off the same
+  writable table and would be one more field to overwrite, not a private path.</p>
+
+<p>  So the documentation changed instead. <code>## Safe decoding</code> now lists all
+  fifteen codes as literals — they were only described by category before,
+  which made "compare against the literal" advice a caller could not follow —
+  and says to compare against the literal or a copy captured at load rather
+  than through <code>ERRORS</code>. <code>### What mutation resistance covers</code> states the
+  narrow guarantee, and names the writable table under what it does not cover
+  with the reasoning above. <code>### Decoders answer instead of raising</code> points a
+  migrating caller at the same rule where they write their first comparison.
+  <code>examples/example.lua</code> compares against <code>&quot;input_limit_exceeded&quot;</code> rather than
+  modelling the shape the README now warns about.</p>
+
+<p>  <code>tests/GuardTest.lua</code> pins the surviving property on real decode outcomes:
+  with every value in <code>ERRORS</code> overwritten, and again with the table replaced
+  outright, the limit, argument, stream, truncation, trailing, codec and
+  compressor paths all still return their documented literals. It asserts
+  against literals rather than against the table, since a code read back out of
+  a poisoned table asserts nothing. Reverting one failure path to read the
+  public table — the shape v1.1.2 fixed — fails that test and nothing else in
+  the suite, because every other assertion compares through <code>ERRORS</code>.</p>
+
+<ul>
+    <li><strong>No functional change.</strong> The only edit to <a href="../source/LibDeflateGuard.lua.html#">LibDeflateGuard.lua</a> is a
+    comment. The differential harness reports zero divergences against v1.3.0.</li>
+</ul>
+
 <h3>LibDeflateGuard v1.3.0</h3>
 
 <ul>
