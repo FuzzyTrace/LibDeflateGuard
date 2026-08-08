@@ -179,20 +179,28 @@ end
 -- module enforces under the same preset name. Without this, BindApi indexed a
 -- nil LIMIT_PRESETS and the harness died with a traceback on the very
 -- references it advertises.
+--
+-- The last two of each five are derived rather than chosen. They are written
+-- out here because an old reference module has to be handed numbers, not a
+-- rule -- but they are the numbers the rule produces, and the check below
+-- fails if this file and the module ever disagree:
+--   max_symbols    = 8 * max_input_bytes + 318
+--   max_work_units = max_symbols + max_output_bytes + 336 * max_blocks
+-- See README.md `### The two derived backstops`.
 local PRESET_LIMITS = {
   addon = {
     max_input_bytes = 64 * 1024,
     max_output_bytes = 512 * 1024,
     max_blocks = 256,
-    max_symbols = 750000,
-    max_work_units = 1500000
+    max_symbols = 524606,
+    max_work_units = 1134910
   },
   generous = {
     max_input_bytes = 1024 * 1024,
     max_output_bytes = 8 * 1024 * 1024,
     max_blocks = 4096,
-    max_symbols = 10000000,
-    max_work_units = 25000000
+    max_symbols = 8388926,
+    max_work_units = 18153790
   }
 }
 
