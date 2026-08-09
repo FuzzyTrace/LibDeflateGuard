@@ -171,6 +171,37 @@
   measurements; `tests/BenchTest.lua` measures calls, not loading. No code
   changed.
 
+- **Documented.** `README.md` `## Migrating from LibDeflate` gains
+  `### A paste-sized import string is refused before it decodes`, a worked
+  example for the failure a real addon author is most likely to hit first.
+
+  An external review observed that the default print-codec cap is
+  4/3 × 64 KiB = 87381 bytes and that import strings routinely exceed it, so
+  the most visible consumer of `DecodeForPrint` — a user pasting an import
+  string — meets the cap on ordinary, entirely non-hostile input. The
+  behaviour is correct and the mechanism was already documented under
+  `## Compression and codecs`. What was missing is that a reader hitting it
+  had no worked path out: the migration guide named the decompress budget as
+  the likely upgrade break and did not name the codec cap that fires one layer
+  earlier.
+
+  The example states the symptom as a reader meets it, gives the fix as a
+  bound policy instance, and says where the number comes from — there is no
+  print-cap key, an instance derives the print cap as 4/3 of its own
+  `max_input_bytes`, so raising the input cap is what moves it. It quotes the
+  155 to 238 ms `generous` figure already in `## Performance` and links
+  `### The stall is bounded, not removed` rather than restating the argument,
+  and links `### Should the default policy be raised? No` in
+  `dev_docs/roadmap.md` rather than reopening it. `## Compression and codecs`
+  gains a cross-reference to it.
+
+  For the size claim the example uses the one real export string this
+  repository carries, `tests/data/warlockWeakAuras.txt` at 132462 bytes, and
+  says that it is held there as compression input rather than as a member this
+  module decodes, so that it is read as evidence of the size and not of the
+  encoding. Every snippet in the section was run as written. No code changed
+  and no cap or default moved.
+
 ### LibDeflateGuard v1.3.0
 
 - **Fixed.** A write to a shipped limit table carried into a policy a caller

@@ -101,6 +101,62 @@ Know what that costs. The default `addon` preset's worst accepted call is 10 to
 `generous` the same shapes are 155 to 238 ms and about 25 MB of allocation. See
 `## Performance`.
 
+### A paste-sized import string is refused before it decodes
+
+The same break, one layer earlier, and the one a real addon meets first. A
+codec decode runs before any decompression budget applies, so `DecodeForPrint`
+carries its own cap, and the default is derived rather than chosen:
+4/3 × 64 KiB = 87381 bytes. Import strings routinely exceed that. The one real
+export string in this repo, `tests/data/warlockWeakAuras.txt`, is 132462 bytes
+— 1.5 times the cap. It is carried there as compression input rather than as a
+member this module decodes, so read it as evidence of the size and not of the
+encoding.
+
+So an ordinary, entirely non-hostile paste fails before any budget you set for
+the decompressor is consulted:
+
+```lua
+local guard = LibDeflateGuard.WithPolicy()
+local payload, decode_error = guard:DecodeForPrint(pasted)
+-- payload is nil, decode_error is "input_limit_exceeded"
+```
+
+Raise the policy. The decode is two calls and both are bounded by the one
+instance:
+
+```lua
+local guard = LibDeflateGuard.WithPolicy("generous")
+
+local payload, decode_error = guard:DecodeForPrint(pasted)
+if not payload then return nil, decode_error end
+
+local message, decompress_error = guard:DecompressDeflate(payload)
+if not message then return nil, decompress_error end
+```
+
+There is no print-cap key to set, which is the part worth knowing before you
+look for one. An instance derives the print cap as 4/3 of its own
+`max_input_bytes`, so raising the input cap is what moves it: `generous`'s
+1 MiB gives 1398101 bytes. For something between the two presets, write only
+the budgets you are raising and let the omitted keys fall back or derive:
+
+```lua
+local guard = LibDeflateGuard.WithPolicy({
+  max_input_bytes = 192 * 1024,      -- print cap becomes 262144
+  max_output_bytes = 2 * 1024 * 1024
+})
+```
+
+Know what it costs. Under `generous` the worst accepted decode is 155 to 238
+ms and is not frame-safe. That is the right trade for this case and the wrong
+one for incoming traffic: an import is a user-initiated paste, so a few hundred
+milliseconds behind a progress indicator is acceptable where it never is for a
+chat packet. See `### The stall is bounded, not removed`.
+
+Raising the _default_ is not the answer, and that is measured rather than
+asserted. See `### Should the default policy be raised? No` in
+`dev_docs/roadmap.md`. The opt-in is the shape.
+
 ### Decoders answer instead of raising
 
 Upstream raises on a wrongly typed argument to a decoder. Every decoder here
@@ -571,6 +627,8 @@ would accept. The channel codecs never grow their input, so their cap is
 A caller that raises `max_input_bytes` should use `WithPolicy` rather than
 raising each cap by hand: an instance applies exactly these ratios to its own
 policy, so the codec caps and the decompress budget cannot drift apart.
+`### A paste-sized import string is refused before it decodes` works that
+through for the case it comes up in most.
 
 ## Performance
 
