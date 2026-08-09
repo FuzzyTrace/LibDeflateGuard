@@ -56,6 +56,60 @@
 <h3>LibDeflateGuard unreleased</h3>
 
 <ul>
+    <li><strong>Fixed.</strong> The derivation of <code>max_symbols</code> and <code>max_work_units</code> did not
+    survive the copy-and-edit idiom this README recommends, so the two backstops
+    froze at the numbers of whatever policy the copy came from.</li>
+</ul>
+
+<p>  Neither of the two changes involved is wrong on its own. One made
+  <code>WithPolicy(name):GetPolicy()</code> → edit → <code>WithPolicy(policy)</code> the recommended
+  way to derive a policy, because a hand-rolled <code>pairs()</code> copy reads a shipped
+  table's contents and launders a write to it. The other made the two backstops
+  derive from <code>max_input_bytes</code> when the key is omitted. <code>GetPolicy()</code> returns
+  all five keys as explicit values, and an explicit value is used as given — so
+  raising <code>max_input_bytes</code> on the copy raised nothing behind it:</p>
+
+<p>  ```lua
+  local policy = LibDeflateGuard.WithPolicy("addon"):GetPolicy()
+  policy.max<em>input</em>bytes = 192 * 1024
+  policy.max<em>output</em>bytes = 8 * 1024 * 1024
+  LibDeflateGuard.WithPolicy(policy):DecompressDeflate(member)
+  -- before: nil, symbol<em>limit</em>exceeded, from the addon preset's 524606
+  -- now:    decodes, because the backstops moved with the budgets
+  ```</p>
+
+<p>  A 109 KB member decoding to 700 KB is inside both budgets the caller raised
+  and was refused by a third they never named — the exact failure the
+  derivation was introduced to remove, reappearing through the derivation's own
+  output.</p>
+
+<p>  <strong>The module now records which backstops it derived, and re-derives them.</strong>
+  Each limit table this module hands out carries a private, out-of-band note of
+  the backstop numbers written into it, and <code>GetPolicy()</code> copies the note along
+  with the numbers. When such a table comes back, a backstop still holding the
+  recorded number is read as omitted and derived again from the current
+  budgets. The note is private and weak-keyed, so a caller's own table can
+  never claim it and a discarded copy is not kept alive by it.</p>
+
+<p>  <strong>A backstop you set yourself is still used exactly as given.</strong> The test is
+  on the value, not on the key: any number other than the one this module wrote
+  into that table is your choice, on a <code>GetPolicy()</code> copy exactly as on a table
+  this module never touched. The one shape this cannot distinguish is writing
+  the derived number back over itself, which is a no-op write.</p>
+
+<p>  This composes with identity anchoring rather than competing with it. A preset
+  name, a <code>LIMIT_PRESETS</code> entry and the defaults all resolve to the same
+  private table, so a <code>GetPolicy()</code> copy of any of them re-derives alike. A
+  hand-rolled <code>pairs()</code> copy still carries no note and still freezes — one more
+  reason to prefer the recommended shape.</p>
+
+<p>  <code>tests/GuardTest.lua</code> pins the reproduction over all four policy sources, the
+  explicit-value hazard in both directions, and the round trip. No decode
+  outcome changes except in the frozen-backstop case: the differential harness
+  reports zero divergences against v1.3.0 over 13,246 and 152,405 compared
+  calls.</p>
+
+<ul>
     <li><strong>Corrected.</strong> <a href="../topics/README.md.html#">README.md</a> <code>### What mutation resistance covers</code> listed
     <code>ERRORS</code> in the same sentence as <code>DEFAULT_LIMITS</code> and <code>LIMIT_PRESETS</code>, as an
     inspection copy whose mutation cannot change what the module enforces. v1.3.0

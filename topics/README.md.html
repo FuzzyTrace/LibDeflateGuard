@@ -469,7 +469,9 @@ policy.max_output_bytes = <span class="number">4096</span>
 
 <p><code>GetPolicy()</code> returns a fresh copy of the private numbers the name resolved
 to, so the derivation starts from values nothing written to the module table
-can reach. Reading a shipped entry's <em>contents</em> and copying them by hand —
+can reach. Raising <code>max_input_bytes</code> on that copy raises the two backstops
+behind it, exactly as omitting them would; see
+<code>### The two derived backstops</code>. Reading a shipped entry's <em>contents</em> and copying them by hand —
 <code>for key, value in pairs(LIMIT_PRESETS.generous)</code> — starts from whatever that
 table holds when you read it, and carries a write to it into your copy. See
 <code>### What mutation resistance covers</code>.</p>
@@ -617,6 +619,28 @@ drive the decoder.</p>
 in either direction. An explicit <code>max_symbols</code> also feeds the work derivation,
 so tightening one tightens the other rather than leaving a work cap above a
 bound symbols can no longer reach.</p>
+
+<p>**A backstop stays derived through a <code>GetPolicy()</code> copy.** <code>GetPolicy()</code> hands
+back all five numbers, so raising <code>max_input_bytes</code> on the copy would otherwise
+leave the two backstops frozen at the source policy's values — the same
+surprise as above, reached through the derivation recommended above it:</p>
+
+
+<pre>
+<span class="keyword">local</span> policy = LibDeflateGuard.WithPolicy(<span class="string">"addon"</span>):GetPolicy()
+policy.max_input_bytes = <span class="number">192</span> * <span class="number">1024</span>
+policy.max_output_bytes = <span class="number">8</span> * <span class="number">1024</span> * <span class="number">1024</span>
+LibDeflateGuard.WithPolicy(policy):DecompressDeflate(member)
+<span class="comment">-- both backstops re-derive from the raised budgets</span>
+</pre>
+
+
+<p>The module remembers which backstops it derived into a table it handed you, so
+one you leave alone is derived again from your current budgets. <strong>One you write
+a different number into is yours</strong>, on a <code>GetPolicy()</code> copy exactly as on a
+table this module never touched, and is used as given. A hand-rolled
+<code>pairs()</code> copy of a policy carries none of this and does freeze — the same
+reason <code>pairs()</code> is not the recommended shape above.</p>
 
 <p>The complete input string counts toward <code>max_input_bytes</code>. A valid compressed
 member followed by one or more complete bytes fails with <code>trailing_data</code>.
