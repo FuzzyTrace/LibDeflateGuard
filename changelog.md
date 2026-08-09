@@ -1,3 +1,71 @@
+### LibDeflateGuard unreleased
+
+- **Fixed.** A policy table was read through its metatable and validated
+  without it, so a policy whose visible content was `{}` could enforce budgets
+  many times the defaults, and a policy whose `__index` raised took
+  `WithPolicy` down with it.
+
+  The resolver read each budget with `limits[key]`, which fires `__index`, and
+  checked for unknown keys with `pairs(limits)`, which does not see an
+  inherited key at all. The two halves disagreed about what the policy said:
+
+  ```lua
+  local defaults = {max_input_bytes = 4 * 1024 * 1024,
+                    max_output_bytes = 8 * 1024 * 1024, max_blocks = 4096}
+  LibDeflateGuard.WithPolicy(setmetatable({}, {__index = defaults}))
+  -- before: an instance enforcing 4 MiB / 8 MiB -- 64x the default budget
+  -- now:    nil, invalid_argument
+  ```
+
+  `setmetatable(saved, {__index = defaults})` is the shape a saved-variables
+  library hands you, and this README pointed at exactly that use case, so this
+  was not a contrived table. A budget key misspelled on such a defaults table
+  was accepted and then silently ignored for the same reason: the check that
+  exists to catch a typo could not see the key.
+
+  The second half hit the entry point that documents the opposite. `WithPolicy`
+  calls the policy validator outside any `pcall`, so a policy whose `__index`
+  raised propagated out of a call documented to report an invalid policy rather
+  than raise it. Which key tripped it varied with `pairs` order.
+
+  **A policy table carrying a metatable is now `invalid_argument`**, whatever
+  the metatable is for. The rule is on the metatable rather than on `__index`,
+  because `__metatable` can make the real one unreachable. With no metatable to
+  fire, the validator cannot run a caller's code at all, so it now reports an
+  invalid policy for every argument and cannot raise for any — which is what
+  `WithPolicy` has always documented.
+
+  **Write the budgets out.** That read is yours, so your own defaults answer
+  it, and the table you hand over carries its whole meaning:
+
+  ```lua
+  local guard = LibDeflateGuard.WithPolicy({
+    max_input_bytes = db.max_input_bytes,
+    max_output_bytes = db.max_output_bytes,
+    max_blocks = db.max_blocks
+  })
+  ```
+
+  Reading through `__index` could not be supported instead: Lua 5.1 and LuaJIT
+  have no portable way to enumerate what an `__index` would answer, so a policy
+  read that way is one whose misspelled keys can never be caught. Refusing it
+  is the same answer an unknown key and an unrecognised preset name already
+  get.
+
+  **Nothing this module hands you is affected.** `GetPolicy()` copies, the
+  `LIMIT_PRESETS` entries and `DEFAULT_LIMITS` are bare tables, so the
+  recommended `WithPolicy("generous"):GetPolicy()` → edit → `WithPolicy(policy)`
+  idiom never meets the check and the derived backstops still re-derive
+  through it. A metatable written onto a shipped limit table stays inert too:
+  the new check sits behind the identity anchor, so a registered table still
+  resolves from its private source and cannot be turned into a rejection by a
+  write from elsewhere in the state.
+
+  No decode outcome changes for any policy without a metatable. The
+  differential gate is clean against v1.3.1: 13,246 compared calls at the
+  default iteration count and 152,405 at
+  `LIBDEFLATEGUARD_FUZZ_ITERATIONS=12`, zero divergences.
+
 ### LibDeflateGuard v1.3.1
 
 - **Fixed.** The derivation of `max_symbols` and `max_work_units` did not

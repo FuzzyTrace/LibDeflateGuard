@@ -19,24 +19,28 @@ could not fire at either shipped preset. Item K is the composition of I and J
 rather than a fault in either. All three shipped in v1.3.1 — a patch rather
 than a minor, because nothing a caller can call changed shape: both budget keys
 remain explicitly settable, and item J moved the two preset values only to the
-bound the other three budgets already made reachable. Item C is the one item
+bound the other three budgets already made reachable. Item L came from a claims
+audit of `README.md` against the code, and is the one item here that is not a
+regression or a composition of earlier ones: the fault it fixes has been in the
+policy validator since the policy table existed. Item C is the one item
 that is neither done nor dropped: it stays parked as an open draft pull
 request, and its conclusion stands, but its evidence is pinned to v1.1.2 and is
 marked stale under the item.
 
-| #   | Item                                               | State      |
-| --- | -------------------------------------------------- | ---------- |
-| A   | CI: fuzz soak, differential gate, version check    | done       |
-| B   | Bound policy instance, plus a compressor cap       | done       |
-| C   | Resumable decode (prototype only)                  | prototyped |
-| D   | Huffman decode LUT                                 | dropped    |
-| E   | Close the channel-codec constructor seam           | done       |
-| F   | Benchmark harness against a reference module       | done       |
-| G   | Document performance, migration, and scope         | done       |
-| H   | Preset mutation carries into a derived policy      | done       |
-| I   | `ERRORS` cannot be anchored the same way           | done       |
-| J   | `max_symbols` and `max_work_units` are derived     | done       |
-| K   | A derived backstop freezes in a `GetPolicy()` copy | done       |
+| #   | Item                                                        | State      |
+| --- | ----------------------------------------------------------- | ---------- |
+| A   | CI: fuzz soak, differential gate, version check             | done       |
+| B   | Bound policy instance, plus a compressor cap                | done       |
+| C   | Resumable decode (prototype only)                           | prototyped |
+| D   | Huffman decode LUT                                          | dropped    |
+| E   | Close the channel-codec constructor seam                    | done       |
+| F   | Benchmark harness against a reference module                | done       |
+| G   | Document performance, migration, and scope                  | done       |
+| H   | Preset mutation carries into a derived policy               | done       |
+| I   | `ERRORS` cannot be anchored the same way                    | done       |
+| J   | `max_symbols` and `max_work_units` are derived              | done       |
+| K   | A derived backstop freezes in a `GetPolicy()` copy          | done       |
+| L   | A policy is read through `__index` and validated without it | done       |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -1326,6 +1330,168 @@ No decode outcome changes except in the frozen-backstop case, which no policy
 in the suite exercises. The differential gate is clean against v1.3.0: 13,246
 compared calls at the default iteration count and 152,405 at
 `LIBDEFLATEGUARD_FUZZ_ITERATIONS=12`, zero divergences.
+
+## L. A policy is read through `__index` and validated without it — done
+
+Found by a claims audit against `README.md`, and confirmed independently. Not a
+composition fault like K: this one has been in the resolver since the policy
+table existed, and every item since has walked past it.
+
+### The defect
+
+`ResolveDecompressLimits` reads each budget with `limits[key]`, which fires
+`__index`, and rejects unknown keys with `pairs(limits)`, which does not see an
+inherited key at all. The two halves disagree about what the policy says, and
+both directions of the disagreement are wrong.
+
+**The loosening, which is the serious half.**
+
+```text
+WithPolicy(setmetatable({}, {__index = {max_input_bytes  = 4 MiB,
+                                        max_output_bytes = 8 MiB,
+                                        max_blocks       = 4096}}))
+  enforced          -> 4194304 / 8388608     (a bare {} gives 65536 / 524288)
+  inherited unknown -> accepted              (direct unknown -> invalid_argument)
+```
+
+A policy whose visible content is `{}` enforces 64× the default budget. This is
+not a contrived table: `setmetatable(saved, {__index = defaults})` is the AceDB
+idiom, and `### A bound policy instance` invited exactly that use case in the
+sentence one line above the hole — "the same code that reads a policy out of
+saved variables can check it". The typo case is the same fault in the other
+direction: a `max_output_byte` on an inherited defaults table is invisible to
+the check that exists to catch it, so it is accepted and then silently ignored.
+
+**The raise.** `LibDeflateGuard.WithPolicy` calls the resolver outside any
+`pcall`, so a policy whose `__index` raises propagates out of a call documented
+to report rather than raise, and whose `### Arity` row carries no "or raises"
+where `CompressDeflate` and `CreateCodec` do. The decompressors survive the
+same table only because `DecompressSafely` wraps them, and they answer
+`internal_error` — a code that names the containment rather than the fault.
+Which key trips it varies with `pairs` order, so it is nondeterministic across
+interpreters.
+
+### The options
+
+1. **`rawget` for both the read and the check.** Internally consistent, and the
+   surprise moves in the safe direction: a `{}` with inherited defaults gets the
+   module's tighter numbers.
+2. **Refuse any policy carrying a metatable**, with `invalid_argument`.
+3. **Read through `__index` and validate through it too.** Requires enumerating
+   inherited keys, which `pairs` cannot do portably on Lua 5.1.
+
+Option 3 is not available, and the reason is worth stating rather than
+dismissing as a portability detail. The unknown-key check is not decoration —
+it is the only thing that catches a misspelled budget, and a misspelled budget
+is a policy that silently is not the one the caller wrote. There is no
+`__pairs` on Lua 5.1 or LuaJIT and no way to ask an `__index` what it would
+answer, so **a policy read through a metatable is one this module can read but
+cannot validate.** Option 3 would ship the read without the check.
+
+Option 1 is the tempting one and was rejected. It closes the loosening and the
+raise both, and it fails safe. What it costs is that the AceDB idiom then
+_silently_ does not do what its author wrote: `WithPolicy(saved)` returns a
+working instance enforcing the module defaults, and the caller finds out in
+production as an `input_limit_exceeded` with no thread back to the cause. That
+is a silent fall back to the defaults for a policy whose meaning this module
+could not establish — and this fork has twice already refused exactly that
+trade. An unrecognised preset name is `invalid_argument` rather than a silent
+fall back to the defaults (item H); an unknown key has always been
+`invalid_argument` rather than an ignored key. A policy whose keys cannot be
+enumerated is the same fault and deserves the same answer.
+
+### Outcome — option 2
+
+One line in `ResolveDecompressLimits`, one localised `getmetatable`, no other
+code change:
+
+```lua
+if getmetatable(limits) ~= nil then return nil end
+```
+
+**On the metatable, not on `__index`.** `__metatable` makes the real metatable
+unreachable, so a narrower test could be lied to by the table it most needs to
+catch. The cost is over-refusal: a policy carrying a metatable for some
+unrelated reason is refused too. That is accepted deliberately — the narrow
+test is not soundly implementable, and a policy table is a bag of five numbers
+with no reason to carry a metatable at all.
+
+**Behind the registry lookup, not in front of it.** See below.
+
+Two properties fall out. `rawget` is then redundant rather than belt and
+braces: with no metatable, `limits[key]` _is_ `rawget(limits, key)`, and the
+read and the check agree by construction — which is the invariant the defect
+violated. And the resolver becomes **total**: `type`, two lookups into private
+maps, `getmetatable`, and then only raw reads and number comparisons. It
+reports an invalid policy for every argument and cannot raise for any. That is
+a stronger fix for the first half than a `pcall` around `WithPolicy` would
+have been, and a `pcall` was rejected for a second reason: it would have had to
+map a genuine internal fault to `invalid_argument`, reporting a bug in this
+module as a bad policy, or grow `WithPolicy` a second failure code and change a
+documented arity in a patch.
+
+### Composing with items H and K
+
+**Ordering is the whole of the H interaction, and getting it wrong would trade
+the loosening for a denial.** A registered limit table resolves by identity and
+its contents are never read, so `setmetatable(LIMIT_PRESETS.addon, {})` is a
+write like any other and has to stay inert. Ahead of the registry lookup, the
+new check would honour that write: one line anywhere in the state turns every
+consumer's `WithPolicy(LIMIT_PRESETS.addon)` into `invalid_argument`. H's claim
+is that a write cannot change what a registered table enforces **in either
+direction**, and a refusal is a direction. Behind the lookup, the claim holds
+unchanged and the check only ever sees a table this module did not hand out.
+
+**K needs nothing and gets nothing.** `_derived_backstops[limits]` is an
+identity lookup into a private weak map and never reads the caller's table, so
+provenance is untouched. Every table this module hands out comes from
+`CopyLimits`, which builds a bare table — so `GetPolicy()` copies, the
+`LIMIT_PRESETS` entries and `DEFAULT_LIMITS` all pass the check, and the
+recommended copy → edit → handback idiom never meets it. Pinned in the test
+rather than argued: a `GetPolicy()` copy carries no metatable, and a backstop
+still re-derives through three round trips of one.
+
+The recurring bug class this file keeps recording is a mechanism that reads a
+caller's table. H answered it by not reading a table it recognises; K by
+keeping its record out of band. L is the same answer once more: refuse the
+table whose contents cannot be established, rather than read some of them.
+
+### What it costs
+
+The AceDB shape is **explicitly unsupported**, not half-supported. A caller
+writes the budgets out instead, which is one call site and a read their own
+defaults answer — the same "who performs the read" seam item I turned on. The
+loss is real but small: `README.md` `### A bound policy instance` and
+`## Safe decoding` now state the rule and show the shape, and the failure is
+loud and checkable by the very code the README told the caller to write. A
+caller relying on the inherited shape today is relying on a policy that was
+already not the one they wrote.
+
+Residue, stated rather than hidden: a consumer who substitutes a
+`LIMIT_PRESETS` entry with a metatabled table turns a caller's decode into
+`invalid_argument`. That is inside the existing "replacing a whole entry"
+class, it fails closed where the old behaviour failed open, and
+`### What mutation resistance covers` carries the clause.
+
+### Regression test and gate
+
+`tests/GuardTest.lua` pins both halves on real decode outcomes: the raising
+policy is answered by `WithPolicy` and named `invalid_argument` rather than
+`internal_error` by the decompressors; a member that the default budget refuses
+and the inherited budget would have admitted decodes to nothing; the same
+numbers written out decode it, so the fix does not read as a budget ceiling; a
+misspelled budget is refused inherited as well as direct; a benign metatable
+and an `__metatable`-hidden one are both refused; a metatable on
+`LIMIT_PRESETS.addon` and on `DEFAULT_LIMITS` is inert; and a `GetPolicy()`
+copy is bare and still re-derives.
+
+Both halves fail against v1.3.1 — the raise escapes `pcall(Guard.WithPolicy, raiser)`, and the inherited policy builds an instance where the test expects
+`nil` — and nothing else in the suite moves.
+
+The differential gate is clean against v1.3.1: 13,246 compared calls at the
+default iteration count and 152,405 at `LIBDEFLATEGUARD_FUZZ_ITERATIONS=12`,
+zero divergences. No policy in the suite carries a metatable, which is the
+point — this changes nothing for a policy that carries its own contents.
 
 ## What the differential harness does not cover
 

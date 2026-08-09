@@ -310,7 +310,9 @@ comparison is the half another addon can break. A copy captured at load works
 too. See `### What mutation resistance covers`.
 
 All limits are positive integer byte or work counts. Omitted keys use the
-defaults. Two presets ship with the library:
+defaults, an unknown key is `invalid_argument`, and so is a policy table
+carrying a metatable — see `### A bound policy instance` for why and for what
+to write instead. Two presets ship with the library:
 
 ```lua
 LibDeflateGuard.LIMIT_PRESETS = {
@@ -403,6 +405,29 @@ if not guard then
   print("Rejected policy:", policy_error) -- invalid_argument
 end
 ```
+
+**A policy table must carry its whole meaning itself.** A table with a
+metatable is `invalid_argument`, whatever the metatable is for, so the
+`setmetatable(saved, {__index = defaults})` shape a saved-variables library
+hands you is refused rather than accepted and then read wrong. Write the
+budgets out, which is a read your own defaults answer:
+
+```lua
+local guard, policy_error = LibDeflateGuard.WithPolicy({
+  max_input_bytes = db.max_input_bytes,
+  max_output_bytes = db.max_output_bytes,
+  max_blocks = db.max_blocks
+})
+```
+
+The reason is that this module reads a policy with `limits[key]` and checks it
+for unknown keys with `pairs`, and on Lua 5.1 those two cannot be made to agree
+about a table whose keys are inherited — there is no portable way to enumerate
+what an `__index` would answer. A policy it cannot enumerate is a policy whose
+misspelled budget it cannot catch, so it declines to guess. Copies this module
+hands you carry no metatable, so
+`WithPolicy("generous"):GetPolicy()` → edit → `WithPolicy(policy)` is
+unaffected. See `### What mutation resistance covers`.
 
 It exposes the budgeted surface:
 
@@ -960,6 +985,16 @@ Within one Lua state, this module resists a consumer that writes to the
   in its place, so `LIMIT_PRESETS.generous = {max_output_bytes = 4096}` still
   yields a table this module cannot tell from a policy you wrote. Name the
   preset and that stops mattering.
+- **A policy cannot smuggle budgets in through a metatable, and a metatable
+  on a shipped limit table is inert.** A policy table carrying a metatable is
+  `invalid_argument`, so `setmetatable({}, {__index = {max_output_bytes = 8 * 1024 * 1024}})` — a table whose visible content is `{}` — is refused rather
+  than enforced at eight times the default. The check sits behind the identity
+  anchor above rather than in front of it, so
+  `setmetatable(LIMIT_PRESETS.addon, mt)` changes nothing either: a registered
+  table resolves from its private source and its contents are never read, and
+  a write that could make it stop resolving would be a denial in place of the
+  loosening. `GetPolicy()` copies and the `LIMIT_PRESETS` entries are bare
+  tables, so nothing this module hands you meets the check.
 - The Adler-32 check the zlib decoder verifies a member with is bound
   privately, rather than read back off the module table at call time.
 - The two World of Warcraft channel codecs are built by a private constructor,
@@ -976,7 +1011,9 @@ What it does not cover:
   `LIMIT_PRESETS.generous = {max_output_bytes = 4096}` puts a table there that
   is indistinguishable from one you wrote yourself, and a caller who then reads
   it back and passes it gets what it says. So does replacing `LIMIT_PRESETS`
-  outright. An entry can also be substituted with _another shipped preset_ —
+  outright. A substituted entry carrying a metatable is now `invalid_argument`
+  rather than a loosening, which fails closed and is still a write reaching a
+  caller. An entry can also be substituted with _another shipped preset_ —
   `LIMIT_PRESETS.addon = LIMIT_PRESETS.generous` — and that table is
   registered, so it is not merely unrecognised: it resolves canonically, to the
   wrong preset's private numbers, and a caller who names nothing gets
