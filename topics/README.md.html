@@ -299,6 +299,10 @@ model because this fork deliberately exposes no global or LibStub identity.
 Release archives are embed-source bundles for copying into the consuming
 project. They intentionally contain no standalone addon TOC.</p>
 
+<p>That has a memory cost, because N embedding addons hold N copies rather than
+sharing one: about 175 KiB each on the Lua 5.1 World of Warcraft ships. See
+<code>### Every embedding addon pays for its own copy</code>.</p>
+
 <p><a name="Safe_decoding"></a></p>
 <h2>Safe decoding</h2>
 
@@ -569,6 +573,11 @@ include garbage the call discards, so they bound the peak rather than being it:
 an earlier hand measurement of peak heap on shapes built to the same
 description, though not from the same bytes, read 1.8 to 2.3 MB and 14.4 to
 22.6 MB. Size a policy against the upper figure. See <code>## Performance</code>.</p>
+
+<p>That is the transient cost of one call. The module's own resident cost is a
+separate quantity, is not bounded by any budget, and is paid once per embedding
+addon rather than once per client. See
+<code>### Every embedding addon pays for its own copy</code>.</p>
 
 <p><a name="Compression_and_codecs"></a></p>
 <h2>Compression and codecs</h2>
@@ -911,6 +920,57 @@ time your client spends in this library.</p>
 </ul>
 
 <p>See <code>## Performance</code> for the measurements and the machine they were taken on.</p>
+
+<h3>Every embedding addon pays for its own copy</h3>
+
+<p>The budgets bound the transient cost of one decode. The <em>resident</em> cost of the
+library itself is bounded by nothing, and under this fork's integration model
+it is paid once per embedding addon rather than once per client.</p>
+
+<p>Upstream LibDeflate short-circuits on LibStub. At <code>afc3b78</code>, <code>LibDeflate.lua</code>
+lines 108–122 read <code>LibStub:GetLibrary(_MAJOR, true)</code> and return the
+already-registered library before building anything, so ten addons that embed
+it share one module. This fork never touches LibStub, by the decision
+<code>## Loading the private module</code> describes, so ten addons that embed it hold ten
+modules.</p>
+
+<p>| Interpreter         | LibDeflateGuard 1.3.0 | upstream <code>afc3b78</code> |
+| ------------------- | --------------------- | ------------------ |
+| Lua 5.1.5           | ~175 KiB              | ~156 KiB           |
+| LuaJIT 2.1, <code>-joff</code> | ~129 KiB              | ~110 KiB           |</p>
+
+<p><strong>The Lua 5.1 row is the one that matters.</strong> World of Warcraft ships a patched
+Lua 5.1, so that is the interpreter this library's users run. The LuaJIT row is
+here because the rest of this file measures there, and because a figure without
+its interpreter is not a measurement.</p>
+
+<p>Each cell is the marginal cost of one further copy: N copies of the file loaded
+into a clean interpreter with <a href="https://www.lua.org/manual/5.1/manual.html#pdf-loadfile">loadfile</a>, the heap collected to a settled
+reading between loads, and the mean taken over copies 2 to N. The figure does
+not move when more collection cycles are added, which is the check that catches
+a reading taken against an unsettled baseline. The <em>first</em> copy costs about 30
+KiB more than that on Lua 5.1, and about 19 KiB more under LuaJIT, because it
+pays for every string constant in the chunk and interning makes those free for
+the copies after it.</p>
+
+<p>Two numbers come out of that table, and the smaller one is the less
+interesting. This fork costs about 19 KiB more per copy than upstream on either
+interpreter — 12% on Lua 5.1, 17% under LuaJIT — which is the guard machinery
+itself. The multiplier is the finding. Ten addons embedding LibDeflateGuard
+hold about 1.75 MiB of module on a shared Lua 5.1 heap where addon memory is a
+real budget, against about 180 KiB for any number of addons sharing one
+upstream copy through LibStub.</p>
+
+<p>That is the price of no shared identity, and it is a price rather than a
+regression. A LibStub-registered library is one another addon can substitute
+under you, which is the surface <code>### What mutation resistance covers</code> is about;
+budgets enforced by a module that can be replaced are advisory. Paying for that
+in resident memory is the trade this fork makes, and it should be made with the
+number in front of you rather than discovered later.</p>
+
+<p>These four figures are hand measurements, not harness output:
+<code>tests/BenchTest.lua</code> measures calls, not loading. The machine is the one
+<code>## Performance</code> names.</p>
 
 <h3>What mutation resistance covers</h3>
 

@@ -205,6 +205,36 @@ max_output_bytes = <span class="number">64</span> * <span class="number">1024</s
   literal copies of the preset numbers for old reference modules and
   cross-checks them against the shipped tables; they were updated with it.</p>
 
+<ul>
+    <li><strong>Documented.</strong> <a href="../topics/README.md.html#">README.md</a> <code>## Security scope</code> now states what a copy of
+    this module costs, which no release has ever carried. An external review
+    found the omission, and it is the one review finding this repository agreed
+    with and had not acted on.</li>
+</ul>
+
+<p>  Measured per marginal copy — N copies loaded into a clean interpreter with
+  <a href="https://www.lua.org/manual/5.1/manual.html#pdf-loadfile">loadfile</a>, the heap collected to a settled reading between loads, the mean
+  taken over copies 2 to N, and the figure checked for movement as collection
+  cycles are added:</p>
+
+<p>  | Interpreter         | LibDeflateGuard 1.3.0 | upstream <code>afc3b78</code> |
+  | ------------------- | --------------------- | ------------------ |
+  | Lua 5.1.5           | ~175 KiB              | ~156 KiB           |
+  | LuaJIT 2.1, <code>-joff</code> | ~129 KiB              | ~110 KiB           |</p>
+
+<p>  The 19 KiB the guard machinery adds is the smaller half. The larger half is
+  that upstream short-circuits on <code>LibStub:GetLibrary</code> and returns the
+  registered copy, so N embedding addons share one module, while this fork
+  never touches LibStub and N addons hold N copies: about 1.75 MiB for ten of
+  them on the Lua 5.1 World of Warcraft ships, against about 180 KiB upstream
+  however many load it.</p>
+
+<p>  Documented as the price of no shared identity rather than as a regression —
+  a library another addon can substitute is one whose budgets are advisory —
+  and stated with its interpreter beside every figure. These are hand
+  measurements; <code>tests/BenchTest.lua</code> measures calls, not loading. No code
+  changed.</p>
+
 <h3>LibDeflateGuard v1.3.0</h3>
 
 <ul>
