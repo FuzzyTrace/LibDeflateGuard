@@ -406,7 +406,9 @@ comparison is the half another addon can break. A copy captured at load works
 too. See <code>### What mutation resistance covers</code>.</p>
 
 <p>All limits are positive integer byte or work counts. Omitted keys use the
-defaults. Two presets ship with the library:</p>
+defaults, an unknown key is <code>invalid_argument</code>, and so is a policy table
+carrying a metatable — see <code>### A bound policy instance</code> for why and for what
+to write instead. Two presets ship with the library:</p>
 
 
 <pre>
@@ -509,6 +511,31 @@ can check it:</p>
 </span><span class="keyword">end</span>
 </pre>
 
+
+<p><strong>A policy table must carry its whole meaning itself.</strong> A table with a
+metatable is <code>invalid_argument</code>, whatever the metatable is for, so the
+<code>setmetatable(saved, {__index = defaults})</code> shape a saved-variables library
+hands you is refused rather than accepted and then read wrong. Write the
+budgets out, which is a read your own defaults answer:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard, policy_error = LibDeflateGuard.WithPolicy({
+  max_input_bytes = db.max_input_bytes,
+  max_output_bytes = db.max_output_bytes,
+  max_blocks = db.max_blocks
+})
+</pre>
+
+
+<p>The reason is that this module reads a policy with <code>limits[key]</code> and checks it
+for unknown keys with <a href="https://www.lua.org/manual/5.1/manual.html#pdf-pairs">pairs</a>, and on Lua 5.1 those two cannot be made to agree
+about a table whose keys are inherited — there is no portable way to enumerate
+what an <code>__index</code> would answer. A policy it cannot enumerate is a policy whose
+misspelled budget it cannot catch, so it declines to guess. Copies this module
+hands you carry no metatable, so
+<code>WithPolicy(&quot;generous&quot;):GetPolicy()</code> → edit → <code>WithPolicy(policy)</code> is
+unaffected. See <code>### What mutation resistance covers</code>.</p>
 
 <p>It exposes the budgeted surface:</p>
 
@@ -1098,6 +1125,16 @@ number in front of you rather than discovered later.</p>
     in its place, so <code>LIMIT_PRESETS.generous = {max_output_bytes = 4096}</code> still
     yields a table this module cannot tell from a policy you wrote. Name the
     preset and that stops mattering.</li>
+    <li><strong>A policy cannot smuggle budgets in through a metatable, and a metatable
+    on a shipped limit table is inert.</strong> A policy table carrying a metatable is
+    <code>invalid_argument</code>, so <code>setmetatable({}, {__index = {max_output_bytes = 8 * 1024 * 1024}})</code> — a table whose visible content is <code>{}</code> — is refused rather
+    than enforced at eight times the default. The check sits behind the identity
+    anchor above rather than in front of it, so
+    <code>setmetatable(LIMIT_PRESETS.addon, mt)</code> changes nothing either: a registered
+    table resolves from its private source and its contents are never read, and
+    a write that could make it stop resolving would be a denial in place of the
+    loosening. <code>GetPolicy()</code> copies and the <code>LIMIT_PRESETS</code> entries are bare
+    tables, so nothing this module hands you meets the check.</li>
     <li>The Adler-32 check the zlib decoder verifies a member with is bound
     privately, rather than read back off the module table at call time.</li>
     <li>The two World of Warcraft channel codecs are built by a private constructor,
@@ -1116,7 +1153,9 @@ number in front of you rather than discovered later.</p>
     <code>LIMIT_PRESETS.generous = {max_output_bytes = 4096}</code> puts a table there that
     is indistinguishable from one you wrote yourself, and a caller who then reads
     it back and passes it gets what it says. So does replacing <code>LIMIT_PRESETS</code>
-    outright. An entry can also be substituted with <em>another shipped preset</em> —
+    outright. A substituted entry carrying a metatable is now <code>invalid_argument</code>
+    rather than a loosening, which fails closed and is still a write reaching a
+    caller. An entry can also be substituted with <em>another shipped preset</em> —
     <code>LIMIT_PRESETS.addon = LIMIT_PRESETS.generous</code> — and that table is
     registered, so it is not merely unrecognised: it resolves canonically, to the
     wrong preset's private numbers, and a caller who names nothing gets

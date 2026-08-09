@@ -53,6 +53,84 @@
 <div id="content">
 
 
+<h3>LibDeflateGuard unreleased</h3>
+
+<ul>
+    <li><strong>Fixed.</strong> A policy table was read through its metatable and validated
+    without it, so a policy whose visible content was <code>{}</code> could enforce budgets
+    many times the defaults, and a policy whose <code>__index</code> raised took
+    <code>WithPolicy</code> down with it.</li>
+</ul>
+
+<p>  The resolver read each budget with <code>limits[key]</code>, which fires <code>__index</code>, and
+  checked for unknown keys with <code>pairs(limits)</code>, which does not see an
+  inherited key at all. The two halves disagreed about what the policy said:</p>
+
+<p>  ```lua
+  local defaults = {max<em>input</em>bytes = 4 * 1024 * 1024,</p>
+
+<pre>
+max_output_bytes = <span class="number">8</span> * <span class="number">1024</span> * <span class="number">1024</span>, max_blocks = <span class="number">4096</span>}
+</pre>
+
+<p>  LibDeflateGuard.WithPolicy(setmetatable({}, {_<em>index = defaults}))
+  -- before: an instance enforcing 4 MiB / 8 MiB -- 64x the default budget
+  -- now:    nil, invalid</em>argument
+  ```</p>
+
+<p>  <code>setmetatable(saved, {__index = defaults})</code> is the shape a saved-variables
+  library hands you, and this README pointed at exactly that use case, so this
+  was not a contrived table. A budget key misspelled on such a defaults table
+  was accepted and then silently ignored for the same reason: the check that
+  exists to catch a typo could not see the key.</p>
+
+<p>  The second half hit the entry point that documents the opposite. <code>WithPolicy</code>
+  calls the policy validator outside any <a href="https://www.lua.org/manual/5.1/manual.html#pdf-pcall">pcall</a>, so a policy whose <code>__index</code>
+  raised propagated out of a call documented to report an invalid policy rather
+  than raise it. Which key tripped it varied with <a href="https://www.lua.org/manual/5.1/manual.html#pdf-pairs">pairs</a> order.</p>
+
+<p>  **A policy table carrying a metatable is now <code>invalid_argument</code>**, whatever
+  the metatable is for. The rule is on the metatable rather than on <code>__index</code>,
+  because <code>__metatable</code> can make the real one unreachable. With no metatable to
+  fire, the validator cannot run a caller's code at all, so it now reports an
+  invalid policy for every argument and cannot raise for any — which is what
+  <code>WithPolicy</code> has always documented.</p>
+
+<p>  <strong>Write the budgets out.</strong> That read is yours, so your own defaults answer
+  it, and the table you hand over carries its whole meaning:</p>
+
+<p>  ```lua
+  local guard = LibDeflateGuard.WithPolicy({</p>
+
+<pre>
+max_input_bytes = db.max_input_bytes,
+max_output_bytes = db.max_output_bytes,
+max_blocks = db.max_blocks
+</pre>
+
+<p>  })
+  ```</p>
+
+<p>  Reading through <code>__index</code> could not be supported instead: Lua 5.1 and LuaJIT
+  have no portable way to enumerate what an <code>__index</code> would answer, so a policy
+  read that way is one whose misspelled keys can never be caught. Refusing it
+  is the same answer an unknown key and an unrecognised preset name already
+  get.</p>
+
+<p>  <strong>Nothing this module hands you is affected.</strong> <code>GetPolicy()</code> copies, the
+  <code>LIMIT_PRESETS</code> entries and <code>DEFAULT_LIMITS</code> are bare tables, so the
+  recommended <code>WithPolicy(&quot;generous&quot;):GetPolicy()</code> → edit → <code>WithPolicy(policy)</code>
+  idiom never meets the check and the derived backstops still re-derive
+  through it. A metatable written onto a shipped limit table stays inert too:
+  the new check sits behind the identity anchor, so a registered table still
+  resolves from its private source and cannot be turned into a rejection by a
+  write from elsewhere in the state.</p>
+
+<p>  No decode outcome changes for any policy without a metatable. The
+  differential gate is clean against v1.3.1: 13,246 compared calls at the
+  default iteration count and 152,405 at
+  <code>LIBDEFLATEGUARD_FUZZ_ITERATIONS=12</code>, zero divergences.</p>
+
 <h3>LibDeflateGuard v1.3.1</h3>
 
 <ul>
