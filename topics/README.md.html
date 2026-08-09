@@ -179,6 +179,68 @@ writes to the module table can alter. See <code>### What mutation resistance cov
 <code>generous</code> the same shapes are 155 to 238 ms and about 25 MB of allocation. See
 <code>## Performance</code>.</p>
 
+<h3>A paste-sized import string is refused before it decodes</h3>
+
+<p>The same break, one layer earlier, and the one a real addon meets first. A
+codec decode runs before any decompression budget applies, so <code>DecodeForPrint</code>
+carries its own cap, and the default is derived rather than chosen:
+4/3 × 64 KiB = 87381 bytes. Import strings routinely exceed that. The one real
+export string in this repo, <code>tests/data/warlockWeakAuras.txt</code>, is 132462 bytes
+— 1.5 times the cap. It is carried there as compression input rather than as a
+member this module decodes, so read it as evidence of the size and not of the
+encoding.</p>
+
+<p>So an ordinary, entirely non-hostile paste fails before any budget you set for
+the decompressor is consulted:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy()
+<span class="keyword">local</span> payload, decode_error = guard:DecodeForPrint(pasted)
+<span class="comment">-- payload is nil, decode_error is "input_limit_exceeded"</span>
+</pre>
+
+
+<p>Raise the policy. The decode is two calls and both are bounded by the one
+instance:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy(<span class="string">"generous"</span>)
+
+<span class="keyword">local</span> payload, decode_error = guard:DecodeForPrint(pasted)
+<span class="keyword">if</span> <span class="keyword">not</span> payload <span class="keyword">then</span> <span class="keyword">return</span> <span class="keyword">nil</span>, decode_error <span class="keyword">end</span>
+
+<span class="keyword">local</span> message, decompress_error = guard:DecompressDeflate(payload)
+<span class="keyword">if</span> <span class="keyword">not</span> message <span class="keyword">then</span> <span class="keyword">return</span> <span class="keyword">nil</span>, decompress_error <span class="keyword">end</span>
+</pre>
+
+
+<p>There is no print-cap key to set, which is the part worth knowing before you
+look for one. An instance derives the print cap as 4/3 of its own
+<code>max_input_bytes</code>, so raising the input cap is what moves it: <code>generous</code>'s
+1 MiB gives 1398101 bytes. For something between the two presets, write only
+the budgets you are raising and let the omitted keys fall back or derive:</p>
+
+
+<pre>
+<span class="keyword">local</span> guard = LibDeflateGuard.WithPolicy({
+  max_input_bytes = <span class="number">192</span> * <span class="number">1024</span>,      <span class="comment">-- print cap becomes 262144
+</span>  max_output_bytes = <span class="number">2</span> * <span class="number">1024</span> * <span class="number">1024</span>
+})
+</pre>
+
+
+<p>Know what it costs. Under <code>generous</code> the worst accepted decode is 155 to 238
+ms and is not frame-safe. That is the right trade for this case and the wrong
+one for incoming traffic: an import is a user-initiated paste, so a few hundred
+milliseconds behind a progress indicator is acceptable where it never is for a
+chat packet. See <code>### The stall is bounded, not removed</code>.</p>
+
+<p>Raising the <em>default</em> is not the answer, and that is measured rather than
+asserted. See <code>### Should the default policy be raised? No</code> in
+<code>dev_docs/roadmap.md</code>. The opt-in is the shape.</p>
+
 <h3>Decoders answer instead of raising</h3>
 
 <p>Upstream raises on a wrongly typed argument to a decoder. Every decoder here
@@ -689,7 +751,9 @@ would accept. The channel codecs never grow their input, so their cap is
 
 <p>A caller that raises <code>max_input_bytes</code> should use <code>WithPolicy</code> rather than
 raising each cap by hand: an instance applies exactly these ratios to its own
-policy, so the codec caps and the decompress budget cannot drift apart.</p>
+policy, so the codec caps and the decompress budget cannot drift apart.
+<code>### A paste-sized import string is refused before it decodes</code> works that
+through for the case it comes up in most.</p>
 
 <p><a name="Performance"></a></p>
 <h2>Performance</h2>
