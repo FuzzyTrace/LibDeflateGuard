@@ -171,11 +171,42 @@ local function DeriveWorkCap(max_symbols, max_output_bytes, max_blocks)
   return max_symbols + max_output_bytes + _WORK_UNITS_PER_BLOCK * max_blocks
 end
 
+-- Which backstops in a given limit table this module derived, and the number
+-- it wrote. A derived value is not a caller's choice, so a table carrying one
+-- must not freeze it: GetPolicy() hands out a copy for a caller to edit, and
+-- raising max_input_bytes on that copy has to raise the backstops behind it
+-- exactly as omitting the keys would. Without this record the recommended
+-- WithPolicy(name):GetPolicy() -> edit -> WithPolicy(policy) idiom composes
+-- with the derivation to produce a policy whose backstops are frozen at the
+-- numbers the source preset happened to hold. See dev_docs/roadmap.md item K.
+--
+-- Kept out of band rather than as a key on the table itself, for two reasons.
+-- ResolveDecompressLimits rejects any key it has no meaning for, so an in-band
+-- marker would have to be carved out of that check; and a caller's own table
+-- must never be able to claim provenance it was not given.
+--
+-- Weak-keyed, because GetPolicy() allocates a copy per call and this map must
+-- not be what keeps them alive. The private limit tables registered at load
+-- time are held by upvalues, so they stay.
+local _derived_backstops = setmetatable({}, {__mode = "k"})
+
+-- Fill in whichever backstops the table does not already name, and record the
+-- numbers written. An already-present value is a caller's and is left alone.
 local function AddDerivedBackstops(limits)
-  limits.max_symbols = DeriveSymbolCap(limits.max_input_bytes)
-  limits.max_work_units = DeriveWorkCap(limits.max_symbols,
-                                        limits.max_output_bytes,
-                                        limits.max_blocks)
+  local derived = _derived_backstops[limits]
+  if limits.max_symbols == nil then
+    limits.max_symbols = DeriveSymbolCap(limits.max_input_bytes)
+    derived = derived or {}
+    derived.max_symbols = limits.max_symbols
+  end
+  if limits.max_work_units == nil then
+    limits.max_work_units = DeriveWorkCap(limits.max_symbols,
+                                          limits.max_output_bytes,
+                                          limits.max_blocks)
+    derived = derived or {}
+    derived.max_work_units = limits.max_work_units
+  end
+  _derived_backstops[limits] = derived
 end
 
 -- The presets name only the three budgets they choose. The other two are
@@ -197,13 +228,18 @@ AddDerivedBackstops(_generous_decompress_limits)
 local _default_decompress_limits = _addon_decompress_limits
 
 local function CopyLimits(limits)
-  return {
+  local copy = {
     max_input_bytes = limits.max_input_bytes,
     max_output_bytes = limits.max_output_bytes,
     max_blocks = limits.max_blocks,
     max_symbols = limits.max_symbols,
     max_work_units = limits.max_work_units
   }
+  -- A copy of a derived value is still derived. Carrying the record here is
+  -- what puts it on the table GetPolicy() returns, which is the one place a
+  -- caller is told to copy a policy and edit it.
+  _derived_backstops[copy] = _derived_backstops[limits]
+  return copy
 end
 
 -- The exported limit tables are names for module constants, not caller-owned
@@ -2335,9 +2371,23 @@ local function ResolveDecompressLimits(limits)
   local canonical = _canonical_decompress_limits[limits]
   if canonical then return canonical end
 
+  -- What this module derived into this very table, if it is one this module
+  -- handed out -- a GetPolicy() copy, in practice. Such a value is a backstop,
+  -- not a budget the caller picked, so it is read as an omission below and
+  -- re-derived against whatever the caller has since done to the other three.
+  --
+  -- The test is on the value, not on the key: a caller who writes any other
+  -- number over a backstop has chosen it, and an explicit choice is honoured
+  -- exactly as it is on a table this module never touched. Value comparison is
+  -- also the only test available -- the keys are present, so __newindex never
+  -- fires, and hiding them behind a metatable to make writes visible would
+  -- break pairs() on Lua 5.1, which is the cost item H already declined.
+  local derived = _derived_backstops[limits]
+
   local resolved = {}
   for key in pairs(_default_decompress_limits) do
     local value = limits[key]
+    if derived and derived[key] == value then value = nil end
     if value ~= nil then
       if type(value) ~= "number" or value ~= value or value < 1 or value ==
         math_huge or value ~= math_floor(value) then return nil end
@@ -2366,14 +2416,9 @@ local function ResolveDecompressLimits(limits)
   -- work_limit_exceeded: the raised budgets were admitted and then refused by
   -- an unraised backstop the caller never named. The work cap is derived from
   -- the resolved max_symbols, so an explicit symbol budget tightens it too.
-  if resolved.max_symbols == nil then
-    resolved.max_symbols = DeriveSymbolCap(resolved.max_input_bytes)
-  end
-  if resolved.max_work_units == nil then
-    resolved.max_work_units = DeriveWorkCap(resolved.max_symbols,
-                                            resolved.max_output_bytes,
-                                            resolved.max_blocks)
-  end
+  -- This also records what it derived, so the result stays re-derivable
+  -- through a GetPolicy() copy of it.
+  AddDerivedBackstops(resolved)
   return resolved
 end
 
