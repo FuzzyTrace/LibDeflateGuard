@@ -1,4 +1,4 @@
-### LibDeflateGuard unreleased
+### LibDeflateGuard v1.3.1
 
 - **Fixed.** The derivation of `max_symbols` and `max_work_units` did not
   survive the copy-and-edit idiom this README recommends, so the two backstops
