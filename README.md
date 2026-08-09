@@ -214,6 +214,10 @@ model because this fork deliberately exposes no global or LibStub identity.
 Release archives are embed-source bundles for copying into the consuming
 project. They intentionally contain no standalone addon TOC.
 
+That has a memory cost, because N embedding addons hold N copies rather than
+sharing one: about 175 KiB each on the Lua 5.1 World of Warcraft ships. See
+`### Every embedding addon pays for its own copy`.
+
 ## Safe decoding
 
 ```lua
@@ -463,6 +467,11 @@ include garbage the call discards, so they bound the peak rather than being it:
 an earlier hand measurement of peak heap on shapes built to the same
 description, though not from the same bytes, read 1.8 to 2.3 MB and 14.4 to
 22.6 MB. Size a policy against the upper figure. See `## Performance`.
+
+That is the transient cost of one call. The module's own resident cost is a
+separate quantity, is not bounded by any budget, and is paid once per embedding
+addon rather than once per client. See
+`### Every embedding addon pays for its own copy`.
 
 ## Compression and codecs
 
@@ -782,6 +791,57 @@ time your client spends in this library.
   not.
 
 See `## Performance` for the measurements and the machine they were taken on.
+
+### Every embedding addon pays for its own copy
+
+The budgets bound the transient cost of one decode. The _resident_ cost of the
+library itself is bounded by nothing, and under this fork's integration model
+it is paid once per embedding addon rather than once per client.
+
+Upstream LibDeflate short-circuits on LibStub. At `afc3b78`, `LibDeflate.lua`
+lines 108–122 read `LibStub:GetLibrary(_MAJOR, true)` and return the
+already-registered library before building anything, so ten addons that embed
+it share one module. This fork never touches LibStub, by the decision
+`## Loading the private module` describes, so ten addons that embed it hold ten
+modules.
+
+| Interpreter         | LibDeflateGuard 1.3.0 | upstream `afc3b78` |
+| ------------------- | --------------------- | ------------------ |
+| Lua 5.1.5           | ~175 KiB              | ~156 KiB           |
+| LuaJIT 2.1, `-joff` | ~129 KiB              | ~110 KiB           |
+
+**The Lua 5.1 row is the one that matters.** World of Warcraft ships a patched
+Lua 5.1, so that is the interpreter this library's users run. The LuaJIT row is
+here because the rest of this file measures there, and because a figure without
+its interpreter is not a measurement.
+
+Each cell is the marginal cost of one further copy: N copies of the file loaded
+into a clean interpreter with `loadfile`, the heap collected to a settled
+reading between loads, and the mean taken over copies 2 to N. The figure does
+not move when more collection cycles are added, which is the check that catches
+a reading taken against an unsettled baseline. The _first_ copy costs about 30
+KiB more than that on Lua 5.1, and about 19 KiB more under LuaJIT, because it
+pays for every string constant in the chunk and interning makes those free for
+the copies after it.
+
+Two numbers come out of that table, and the smaller one is the less
+interesting. This fork costs about 19 KiB more per copy than upstream on either
+interpreter — 12% on Lua 5.1, 17% under LuaJIT — which is the guard machinery
+itself. The multiplier is the finding. Ten addons embedding LibDeflateGuard
+hold about 1.75 MiB of module on a shared Lua 5.1 heap where addon memory is a
+real budget, against about 180 KiB for any number of addons sharing one
+upstream copy through LibStub.
+
+That is the price of no shared identity, and it is a price rather than a
+regression. A LibStub-registered library is one another addon can substitute
+under you, which is the surface `### What mutation resistance covers` is about;
+budgets enforced by a module that can be replaced are advisory. Paying for that
+in resident memory is the trade this fork makes, and it should be made with the
+number in front of you rather than discovered later.
+
+These four figures are hand measurements, not harness output:
+`tests/BenchTest.lua` measures calls, not loading. The machine is the one
+`## Performance` names.
 
 ### What mutation resistance covers
 

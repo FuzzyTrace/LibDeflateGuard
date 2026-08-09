@@ -143,6 +143,34 @@
   literal copies of the preset numbers for old reference modules and
   cross-checks them against the shipped tables; they were updated with it.
 
+- **Documented.** `README.md` `## Security scope` now states what a copy of
+  this module costs, which no release has ever carried. An external review
+  found the omission, and it is the one review finding this repository agreed
+  with and had not acted on.
+
+  Measured per marginal copy — N copies loaded into a clean interpreter with
+  `loadfile`, the heap collected to a settled reading between loads, the mean
+  taken over copies 2 to N, and the figure checked for movement as collection
+  cycles are added:
+
+  | Interpreter         | LibDeflateGuard 1.3.0 | upstream `afc3b78` |
+  | ------------------- | --------------------- | ------------------ |
+  | Lua 5.1.5           | ~175 KiB              | ~156 KiB           |
+  | LuaJIT 2.1, `-joff` | ~129 KiB              | ~110 KiB           |
+
+  The 19 KiB the guard machinery adds is the smaller half. The larger half is
+  that upstream short-circuits on `LibStub:GetLibrary` and returns the
+  registered copy, so N embedding addons share one module, while this fork
+  never touches LibStub and N addons hold N copies: about 1.75 MiB for ten of
+  them on the Lua 5.1 World of Warcraft ships, against about 180 KiB upstream
+  however many load it.
+
+  Documented as the price of no shared identity rather than as a regression —
+  a library another addon can substitute is one whose budgets are advisory —
+  and stated with its interpreter beside every figure. These are hand
+  measurements; `tests/BenchTest.lua` measures calls, not loading. No code
+  changed.
+
 ### LibDeflateGuard v1.3.0
 
 - **Fixed.** A write to a shipped limit table carried into a policy a caller
