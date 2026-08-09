@@ -1323,6 +1323,122 @@ Test("a derived backstop re-derives through a policy copy", function()
   end
 end)
 
+-- Item L. The resolver read a policy with limits[key], which fires __index,
+-- and checked for unknown keys with pairs(limits), which does not see an
+-- inherited key. Two consequences, both pinned below: a policy whose __index
+-- raises took WithPolicy out with it where the docs promise a report, and a
+-- policy whose own contents are {} enforced whatever its metatable answered.
+-- A metatabled policy is now invalid_argument.
+Test("a policy read through a metatable is refused, not half-read", function()
+  -- Half one. WithPolicy calls the resolver outside any pcall, so a raising
+  -- __index used to propagate out of a call documented to answer nil, code.
+  -- The decompressors wrap the same call and answered internal_error, which
+  -- named the containment rather than the fault.
+  local raiser = setmetatable({max_input_bytes = 4096, max_output_bytes = 8192},
+                              {
+    __index = function(_, key) error("undeclared " .. tostring(key)) end
+  })
+  local ok, instance, code = pcall(Guard.WithPolicy, raiser)
+  assert(ok, "WithPolicy must answer a raising policy, not raise with it")
+  AssertEqual(instance, nil, "a raising policy builds no instance")
+  AssertEqual(code, Guard.ERRORS.INVALID_ARGUMENT,
+              "a raising policy is an invalid policy")
+  AssertEqual(select(2, Guard:DecompressDeflate(FromHex("330400"), raiser)),
+              Guard.ERRORS.INVALID_ARGUMENT,
+              "the decompressors name the fault, not the containment")
+
+  -- Half two, and the one that mattered: a silent loosening. The visible
+  -- content of this policy is {}, and it used to enforce 64x the default
+  -- budget -- setmetatable({}, {__index = defaults}) is the saved-variables
+  -- idiom, so this is not a contrived table. Asserted on a real decode: the
+  -- member is inside the inherited output cap and well past the default one.
+  local payload = string.rep("a", 700000)
+  local member = Guard:CompressDeflate(payload)
+  local budgets = {
+    max_input_bytes = 4 * 1024 * 1024,
+    max_output_bytes = 8 * 1024 * 1024,
+    max_blocks = 4096
+  }
+  assert(#payload > Guard.DEFAULT_LIMITS.max_output_bytes,
+         "the payload must exceed the default output budget")
+  assert(#payload < budgets.max_output_bytes,
+         "the payload must fit the inherited output budget")
+  AssertEqual(select(2, Guard:DecompressDeflate(member)),
+              Guard.ERRORS.OUTPUT_LIMIT_EXCEEDED,
+              "the default budget refuses the member")
+
+  local inherited = setmetatable({}, {__index = budgets})
+  AssertEqual(Guard.WithPolicy(inherited), nil,
+              "an inherited budget builds no instance")
+  local output, decode_error = Guard:DecompressDeflate(member, inherited)
+  AssertEqual(output, nil, "an inherited budget decodes nothing")
+  AssertEqual(decode_error, Guard.ERRORS.INVALID_ARGUMENT,
+              "an inherited budget is refused rather than enforced")
+
+  -- Written out, the same numbers are a policy this module can validate, and
+  -- they work. This is the documented migration: the caller performs the
+  -- read, so their own defaults apply, and hands over a table whose contents
+  -- are all of it. Without this the fix would read as a budget ceiling.
+  local flattened = assert(Guard.WithPolicy(
+                             {
+      max_input_bytes = inherited.max_input_bytes,
+      max_output_bytes = inherited.max_output_bytes,
+      max_blocks = inherited.max_blocks
+    }), "a flattened policy must build an instance")
+  AssertEqual(flattened:DecompressDeflate(member), payload,
+              "a flattened policy enforces what the caller meant")
+
+  -- The unknown-key check is the other half of the disagreement, and it is
+  -- the half that cannot be fixed by reading harder: pairs() cannot enumerate
+  -- what an __index would answer, so a budget misspelled on a defaults table
+  -- was accepted and then silently ignored.
+  AssertEqual(Guard.WithPolicy({max_output_byte = 4096}), nil,
+              "a misspelled budget written directly is refused")
+  AssertEqual(Guard.WithPolicy(setmetatable({}, {
+    __index = {max_output_byte = 4096}
+  })), nil, "a misspelled budget inherited is refused too")
+
+  -- Any metatable, not just one carrying __index. __metatable makes the real
+  -- metatable unreachable, so a narrower test could be lied to by exactly the
+  -- table it most needs to catch.
+  for index, hidden in ipairs({
+    setmetatable({max_blocks = 1}, {__tostring = function() return "" end}),
+    setmetatable({max_blocks = 1}, {__index = budgets, __metatable = "hidden"})
+  }) do
+    AssertEqual(Guard.WithPolicy(hidden), nil, "metatabled policy " .. index)
+    AssertEqual(select(2, Guard:DecompressDeflate(FromHex("330400"), hidden)),
+                Guard.ERRORS.INVALID_ARGUMENT,
+                "metatabled policy " .. index .. " at the limits parameter")
+  end
+
+  -- Composition with item H. A registered table resolves by identity and its
+  -- contents are never read, so a metatable stapled onto one is a write like
+  -- any other and must stay inert. The check sits after the registry lookup
+  -- for this reason: ahead of it, one setmetatable() elsewhere in the state
+  -- would turn every consumer's WithPolicy(LIMIT_PRESETS.addon) into
+  -- invalid_argument -- a loosening closed by opening a denial.
+  local G = FreshGuard()
+  setmetatable(G.LIMIT_PRESETS.addon, {__index = budgets})
+  setmetatable(G.DEFAULT_LIMITS, {__index = budgets})
+  AssertEqual(assert(G.WithPolicy(G.LIMIT_PRESETS.addon),
+                     "a metatabled preset must still resolve"):GetPolicy().max_input_bytes,
+              64 * 1024, "a metatable on a registered preset is inert")
+  AssertEqual(
+    assert(G.WithPolicy(G.DEFAULT_LIMITS)):GetPolicy().max_output_bytes,
+    512 * 1024, "a metatable on DEFAULT_LIMITS is inert")
+
+  -- Composition with item K. Every table this module hands out is bare, so
+  -- the recommended copy-edit-handback idiom never meets the new check and
+  -- the backstops still re-derive through it.
+  local trip = assert(Guard.WithPolicy("addon")):GetPolicy()
+  AssertEqual(getmetatable(trip), nil, "a GetPolicy copy carries no metatable")
+  for _ = 1, 3 do trip = assert(Guard.WithPolicy(trip)):GetPolicy() end
+  trip.max_input_bytes = 192 * 1024
+  AssertEqual(assert(Guard.WithPolicy(trip)):GetPolicy().max_symbols,
+              DerivedSymbols(192 * 1024),
+              "a backstop still re-derives through a round-tripped copy")
+end)
+
 -- Item H. LIMIT_PRESETS and DEFAULT_LIMITS are copies of the private limit
 -- tables, so writing to one cannot reach the module's own default path -- the
 -- tests above pin that. What it did reach was a policy a caller derives from

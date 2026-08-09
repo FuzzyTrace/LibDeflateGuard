@@ -305,6 +305,7 @@ LibDeflateGuard.DEFAULT_CODEC_LIMITS = {
 -- localize Lua api for faster access.
 local assert = assert
 local error = error
+local getmetatable = getmetatable
 local math_floor = math.floor
 local math_huge = math.huge
 local pairs = pairs
@@ -2370,6 +2371,37 @@ local function ResolveDecompressLimits(limits)
   if type(limits) ~= "table" then return nil end
   local canonical = _canonical_decompress_limits[limits]
   if canonical then return canonical end
+
+  -- A policy this module cannot read raw is a policy it cannot validate, so
+  -- it is refused rather than half-read. The value read below is limits[key],
+  -- which fires __index; the unknown-key check is pairs(limits), which does
+  -- not see an inherited key at all and cannot be made to -- Lua 5.1 and
+  -- LuaJIT have no portable way to enumerate what an __index would answer.
+  -- The two halves therefore disagree about what the policy says. A table
+  -- whose own contents are {} can inherit budgets many times the defaults and
+  -- have them enforced, and a budget key misspelled on an inherited defaults
+  -- table is silently dropped by the very check that exists to catch it.
+  -- invalid_argument is the answer an unknown key and an unrecognised preset
+  -- name already get, and this is the same fault: a policy whose meaning this
+  -- module cannot establish. See dev_docs/roadmap.md item L.
+  --
+  -- The test is on the metatable, not on __index, because __metatable makes
+  -- the real one unreachable and a narrower test could be lied to.
+  --
+  -- Placed after the registered-table lookup on purpose. A registered table
+  -- resolves by identity and its contents are never read, so setmetatable()
+  -- on one is a write like any other and has to stay inert; refusing it here
+  -- would let one line elsewhere in the state turn every consumer's
+  -- WithPolicy(LIMIT_PRESETS.addon) into invalid_argument, which is a
+  -- direction item H closed. Every table this module hands out -- CopyLimits,
+  -- and so GetPolicy() and the LIMIT_PRESETS entries -- is a bare table, so
+  -- the recommended copy-edit-handback idiom never meets this check.
+  --
+  -- With this in place nothing below can run a caller's code, so the whole
+  -- function is total: it reports an invalid policy and cannot raise on any
+  -- argument. That is what WithPolicy documents, and it calls this outside
+  -- any pcall.
+  if getmetatable(limits) ~= nil then return nil end
 
   -- What this module derived into this very table, if it is one this module
   -- handed out -- a GetPolicy() copy, in practice. Such a value is a backstop,
