@@ -367,7 +367,9 @@ local guard = LibDeflateGuard.WithPolicy(policy)
 
 `GetPolicy()` returns a fresh copy of the private numbers the name resolved
 to, so the derivation starts from values nothing written to the module table
-can reach. Reading a shipped entry's _contents_ and copying them by hand —
+can reach. Raising `max_input_bytes` on that copy raises the two backstops
+behind it, exactly as omitting them would; see
+`### The two derived backstops`. Reading a shipped entry's _contents_ and copying them by hand —
 `for key, value in pairs(LIMIT_PRESETS.generous)` — starts from whatever that
 table holds when you read it, and carries a write to it into your copy. See
 `### What mutation resistance covers`.
@@ -505,6 +507,26 @@ Both keys remain fully settable and an explicit value is used exactly as given,
 in either direction. An explicit `max_symbols` also feeds the work derivation,
 so tightening one tightens the other rather than leaving a work cap above a
 bound symbols can no longer reach.
+
+**A backstop stays derived through a `GetPolicy()` copy.** `GetPolicy()` hands
+back all five numbers, so raising `max_input_bytes` on the copy would otherwise
+leave the two backstops frozen at the source policy's values — the same
+surprise as above, reached through the derivation recommended above it:
+
+```lua
+local policy = LibDeflateGuard.WithPolicy("addon"):GetPolicy()
+policy.max_input_bytes = 192 * 1024
+policy.max_output_bytes = 8 * 1024 * 1024
+LibDeflateGuard.WithPolicy(policy):DecompressDeflate(member)
+-- both backstops re-derive from the raised budgets
+```
+
+The module remembers which backstops it derived into a table it handed you, so
+one you leave alone is derived again from your current budgets. **One you write
+a different number into is yours**, on a `GetPolicy()` copy exactly as on a
+table this module never touched, and is used as given. A hand-rolled
+`pairs()` copy of a policy carries none of this and does freeze — the same
+reason `pairs()` is not the recommended shape above.
 
 The complete input string counts toward `max_input_bytes`. A valid compressed
 member followed by one or more complete bytes fails with `trailing_data`.

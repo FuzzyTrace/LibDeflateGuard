@@ -1197,6 +1197,132 @@ Test("the derived backstops track the policy instead of a constant", function()
   end
 end)
 
+-- Item K. Items I and J compose into a defect neither one has on its own.
+-- Item I made WithPolicy(name):GetPolicy() -> edit -> WithPolicy(policy) the
+-- recommended derivation, because a hand pairs() copy launders a poisoned
+-- preset. Item J made the two backstops derive from max_input_bytes when the
+-- key is omitted. GetPolicy() returns all five keys as explicit values, so
+-- raising max_input_bytes on the copy left the backstops frozen at the source
+-- preset's numbers and a member both binding budgets admit was refused by one
+-- the caller never named -- exactly what item J existed to remove.
+--
+-- Provenance is what tells the two cases apart: the module records the
+-- backstop numbers it wrote into a table it handed out, and a value still
+-- equal to the recorded one is read as an omission and re-derived. Any other
+-- number is the caller's and is used as given.
+Test("a derived backstop re-derives through a policy copy", function()
+  -- huffman_only gives a member with a high symbol-to-byte ratio, so 192 KiB
+  -- of input decodes to 700 KB and needs more symbols than the addon preset's
+  -- backstop allows. Both budgets a caller would raise admit it.
+  local payload = string.rep("aaab", 175000)
+  local member = Guard:CompressDeflate(payload,
+                                       {level = 6, strategy = "huffman_only"})
+  local raised_input = 192 * 1024
+  local raised_output = 8 * 1024 * 1024
+  assert(#member < raised_input, "the member must fit the raised input cap")
+  assert(#payload < raised_output, "the payload must fit the raised output cap")
+  assert(#payload > Guard.LIMIT_PRESETS.addon.max_symbols,
+         "the member must need more symbols than the addon backstop allows")
+
+  -- The reproduction, over every policy shape a GetPolicy() copy can come
+  -- from: a preset name, a registered LIMIT_PRESETS entry, the defaults, and
+  -- a caller's own partial table. Item H resolves the first three from private
+  -- storage by identity, so provenance has to ride alongside that rather than
+  -- through the table's contents.
+  local sources = {
+    {"a preset name", "addon"}, {"a registered preset table", nil},
+    {"the default policy", false}, {
+      "a caller's own table",
+      {max_input_bytes = 64 * 1024, max_output_bytes = 512 * 1024}
+    }
+  }
+  sources[2][2] = Guard.LIMIT_PRESETS.addon
+  for _, source in ipairs(sources) do
+    local label, policy = source[1], source[2]
+    if policy == false then policy = nil end
+    local copy = assert(Guard.WithPolicy(policy)):GetPolicy()
+    copy.max_input_bytes = raised_input
+    copy.max_output_bytes = raised_output
+    local guard = assert(Guard.WithPolicy(copy), "policy from " .. label)
+    AssertEqual(guard:GetPolicy().max_symbols, DerivedSymbols(raised_input),
+                "the symbol backstop re-derives through a copy of " .. label)
+    AssertEqual(guard:GetPolicy().max_work_units, DerivedWork(
+                  DerivedSymbols(raised_input), raised_output, copy.max_blocks),
+                "the work backstop re-derives through a copy of " .. label)
+    AssertEqual(guard:DecompressDeflate(member), payload,
+                "a raised copy of " .. label .. " must decode the member")
+  end
+
+  -- The hazard. A backstop the caller wrote is a choice, not a leftover, and
+  -- re-deriving over it would delete the only budget that charges per decode
+  -- rather than per byte. The test is on the value: any number other than the
+  -- one this module wrote into that table is the caller's.
+  local explicit = assert(Guard.WithPolicy("addon")):GetPolicy()
+  explicit.max_input_bytes = raised_input
+  explicit.max_output_bytes = raised_output
+  explicit.max_symbols = 4242
+  local bound = assert(Guard.WithPolicy(explicit))
+  AssertEqual(bound:GetPolicy().max_symbols, 4242,
+              "an explicit max_symbols on a copy is honoured")
+  AssertEqual(bound:GetPolicy().max_work_units,
+              DerivedWork(4242, raised_output, explicit.max_blocks),
+              "the work backstop follows an explicit max_symbols on a copy")
+  AssertEqual(select(2, bound:DecompressDeflate(member)),
+              Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+              "an explicit max_symbols on a copy can still refuse")
+
+  explicit.max_symbols = nil
+  explicit.max_work_units = 7
+  AssertEqual(select(2, assert(Guard.WithPolicy(explicit)):DecompressDeflate(
+                       member)), Guard.ERRORS.WORK_LIMIT_EXCEEDED,
+              "an explicit max_work_units on a copy can still refuse")
+
+  -- Provenance survives a round trip. The recommended idiom is a copy, an
+  -- edit and a handback, and a caller who sizes a policy in two steps -- or
+  -- reads one back out of an instance built from an earlier copy -- must not
+  -- find the backstops frozen one step later than they used to be.
+  local trip = assert(Guard.WithPolicy("addon")):GetPolicy()
+  for _ = 1, 3 do trip = assert(Guard.WithPolicy(trip)):GetPolicy() end
+  trip.max_input_bytes = raised_input
+  trip.max_output_bytes = raised_output
+  AssertEqual(assert(Guard.WithPolicy(trip)):GetPolicy().max_symbols,
+              DerivedSymbols(raised_input),
+              "a derived backstop survives a GetPolicy round trip")
+
+  -- And so does an explicit one, in the other direction.
+  local kept = assert(Guard.WithPolicy({max_symbols = 5})):GetPolicy()
+  for _ = 1, 3 do kept = assert(Guard.WithPolicy(kept)):GetPolicy() end
+  kept.max_input_bytes = raised_input
+  AssertEqual(assert(Guard.WithPolicy(kept)):GetPolicy().max_symbols, 5,
+              "an explicit backstop does not decay into a derived one")
+
+  -- Provenance is the module's record of a table it handed out, not a
+  -- property of the numbers. A caller's own table holding the same numbers
+  -- claims nothing, and is enforced exactly as written.
+  local forged = {
+    max_input_bytes = raised_input,
+    max_output_bytes = raised_output,
+    max_blocks = Guard.LIMIT_PRESETS.addon.max_blocks,
+    max_symbols = Guard.LIMIT_PRESETS.addon.max_symbols,
+    max_work_units = Guard.LIMIT_PRESETS.addon.max_work_units
+  }
+  AssertEqual(assert(Guard.WithPolicy(forged)):GetPolicy().max_symbols,
+              Guard.LIMIT_PRESETS.addon.max_symbols,
+              "a caller table holding the preset numbers is used as written")
+  AssertEqual(select(2, Guard:DecompressDeflate(member, forged)),
+              Guard.ERRORS.SYMBOL_LIMIT_EXCEEDED,
+              "a caller table holding the preset numbers still binds")
+
+  -- A backstop the caller writes is still validated. Provenance decides
+  -- whether a value is read, never whether it is checked.
+  local invalid = assert(Guard.WithPolicy("addon")):GetPolicy()
+  for _, bad in ipairs({-1, 0, 1.5, math.huge}) do
+    invalid.max_symbols = bad
+    AssertEqual(Guard.WithPolicy(invalid), nil,
+                "a caller's malformed backstop on a copy is still refused")
+  end
+end)
+
 -- Item H. LIMIT_PRESETS and DEFAULT_LIMITS are copies of the private limit
 -- tables, so writing to one cannot reach the module's own default path -- the
 -- tests above pin that. What it did reach was a policy a caller derives from

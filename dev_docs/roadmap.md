@@ -15,23 +15,25 @@ shipped in v1.3.0 — a minor version rather than a patch because it changes
 behaviour. Item I was found by review of item H's documentation, and is
 documentation and a test rather than a behaviour change. Item J came from an
 external review of the limit model, which found that two of the five budgets
-could not fire at either shipped preset. Item C is the one item that is neither
-done nor dropped: it stays parked as an open draft pull request, and its
-conclusion stands, but its evidence is pinned to v1.1.2 and is marked stale
-under the item.
+could not fire at either shipped preset. Item K is the composition of I and J
+rather than a fault in either, and ships alongside them. Item C is the one item
+that is neither done nor dropped: it stays parked as an open draft pull
+request, and its conclusion stands, but its evidence is pinned to v1.1.2 and is
+marked stale under the item.
 
-| #   | Item                                            | State      |
-| --- | ----------------------------------------------- | ---------- |
-| A   | CI: fuzz soak, differential gate, version check | done       |
-| B   | Bound policy instance, plus a compressor cap    | done       |
-| C   | Resumable decode (prototype only)               | prototyped |
-| D   | Huffman decode LUT                              | dropped    |
-| E   | Close the channel-codec constructor seam        | done       |
-| F   | Benchmark harness against a reference module    | done       |
-| G   | Document performance, migration, and scope      | done       |
-| H   | Preset mutation carries into a derived policy   | done       |
-| I   | `ERRORS` cannot be anchored the same way        | done       |
-| J   | `max_symbols` and `max_work_units` are derived  | done       |
+| #   | Item                                               | State      |
+| --- | -------------------------------------------------- | ---------- |
+| A   | CI: fuzz soak, differential gate, version check    | done       |
+| B   | Bound policy instance, plus a compressor cap       | done       |
+| C   | Resumable decode (prototype only)                  | prototyped |
+| D   | Huffman decode LUT                                 | dropped    |
+| E   | Close the channel-codec constructor seam           | done       |
+| F   | Benchmark harness against a reference module       | done       |
+| G   | Document performance, migration, and scope         | done       |
+| H   | Preset mutation carries into a derived policy      | done       |
+| I   | `ERRORS` cannot be anchored the same way           | done       |
+| J   | `max_symbols` and `max_work_units` are derived     | done       |
+| K   | A derived backstop freezes in a `GetPolicy()` copy | done       |
 
 ## A. CI: fuzz soak, differential gate, version check
 
@@ -1173,6 +1175,154 @@ default iteration count and at `LIBDEFLATEGUARD_FUZZ_ITERATIONS=12`: 13,246 and
 The gate cannot see the slack question. It mutates and truncates members the
 compressor produced, and the shapes above are hand-built ones it will not
 generate — which is why they are pinned in `tests/GuardTest.lua` instead.
+
+## K. A derived backstop freezes in a `GetPolicy()` copy — done
+
+Found by composing the two items above. **Neither I nor J is wrong, and the
+fix belongs to neither of them.** Item I made
+`WithPolicy(name):GetPolicy()` → edit → `WithPolicy(policy)` the recommended
+derivation, on the grounds that a hand-rolled `pairs()` copy reads a shipped
+table's contents and launders a write to it. Item J made `max_symbols` and
+`max_work_units` derive from `max_input_bytes` when the key is omitted, and was
+careful to keep an explicit value used exactly as given. Put together, the
+recommended idiom cannot reach the derivation: `GetPolicy()` returns all five
+keys as explicit values, so raising `max_input_bytes` on the copy leaves the
+two backstops frozen at the source preset's numbers.
+
+Worth recording that this is a class, not an incident. J's own outcome section
+says an explicit value is honoured; I's says to copy a policy and edit it. Each
+sentence is true and neither mentions the other, which is what made the pair
+invisible in review of either one.
+
+### The reproduction
+
+`string.rep("aaab", 175000)` compressed with `strategy = "huffman_only"` gives
+a member with a high symbol-to-byte ratio — 109,656 bytes in, 700,000 out, well
+inside a 192 KiB input and 8 MiB output policy, and well past the `addon`
+preset's 524,606 symbol backstop:
+
+```text
+WithPolicy("addon"):GetPolicy(), max_input_bytes raised to 192 KiB
+  -> nil, symbol_limit_exceeded
+same policy with the two keys omitted so they re-derive
+  -> ok 700000
+```
+
+A backstop refusing a member that both binding budgets admit is exactly what
+item J existed to remove.
+
+### Three options, and why provenance is the one
+
+1. **Track provenance.** Remember which limit keys the caller set and which
+   this module derived, and re-derive the derived ones when a budget changes.
+2. **Have `GetPolicy()` omit the derived keys.** Rejected. It changes what
+   `GetPolicy()` means — it is documented as "the policy this instance
+   enforces", and a policy missing two of its five numbers no longer answers
+   that question. It would also break `tests/FuzzTest.lua`'s assertion that
+   every key of a policy round trips through the instance.
+3. **Document the footgun.** Rejected. It hands the reader a warning label
+   instead of a fix, on the one path the README tells them to take.
+
+### The mechanism
+
+A private, weak-keyed map from a limit table to the backstop numbers this
+module wrote into it. Three edits carry it:
+
+- `AddDerivedBackstops` fills only the keys that are absent, and records what
+  it wrote. The load-time preset initialisation and the resolver's tail become
+  one function instead of two copies of the same derivation.
+- `CopyLimits` propagates the record to the copy. That single line is what puts
+  provenance on the table `GetPolicy()` returns, on the instance's own private
+  copy, and on the exported `LIMIT_PRESETS` entries, without touching any of
+  the three call sites.
+- `ResolveDecompressLimits` reads a recorded value as an omission, so the
+  existing derivation runs again against the current budgets.
+
+**Out of band, deliberately.** `ResolveDecompressLimits` rejects any key it has
+no meaning for, so an in-band marker would have to be carved out of that check
+— and a caller's own table must never be able to claim provenance it was not
+given. Weak-keyed because `GetPolicy()` allocates a copy per call and this map
+must not be what keeps them alive; the private limit tables registered at load
+time are held by upvalues and so stay.
+
+### The explicit-value hazard
+
+**An explicitly set `max_symbols` must still be honoured.** `tests/FuzzTest.lua`
+has a below-floor symbol property and `tests/GuardTest.lua` has exact-boundary
+adversarial vectors; both set these keys tight on purpose, and a fix that
+helpfully re-derives over a caller's value deletes the only budget that charges
+per decode rather than per byte.
+
+The distinction is on the **value**, not the key. A backstop counts as derived
+only if this module wrote it into that exact table and the number is still the
+one it wrote. Any other number is the caller's. So a caller who takes a
+`GetPolicy()` copy, raises `max_input_bytes` and also writes `max_symbols = 5`
+gets 5, and the work backstop derives from 5, exactly as on a table this module
+never touched. Both test files build their own tables and carry no record at
+all, so nothing in either changed.
+
+Value comparison is also the only test available. The keys are present in the
+table, so `__newindex` never fires and a write cannot be observed; hiding the
+keys behind a metatable to make writes visible would break `pairs()` on Lua 5.1
+and LuaJIT, which is the cost item H already declined to pay. The residual is
+that writing the derived number back over itself is indistinguishable from
+leaving it alone — which is a no-op write, and the alternative, keying on the
+name rather than the value, would destroy real explicit values instead. State
+it rather than hide it.
+
+### Composing with item H
+
+Item H resolves a registered limit table from private storage by object
+identity, and a preset name from a private table a consumer cannot reach.
+Provenance rides alongside that rather than through any table's contents, so
+all four sources behave alike:
+
+| policy passed to `WithPolicy`      | `GetPolicy()` copy, `max_input_bytes` raised |
+| ---------------------------------- | -------------------------------------------- |
+| `"addon"` (name)                   | backstops re-derive                          |
+| `LIMIT_PRESETS.addon` (registered) | backstops re-derive                          |
+| `nil` (defaults)                   | backstops re-derive                          |
+| a caller's own partial table       | backstops re-derive                          |
+
+The first three resolve to the same private table, which was registered at load
+time, so the copy carries the same record either way. The registered-table path
+still short-circuits on identity before the resolver's read loop, which is
+correct: a canonical table's backstops are already the derived ones.
+
+A hand-rolled `pairs()` copy carries no record and still freezes. That is the
+same boundary item H's review already drew and is one more reason the
+recommended shape is the recommended shape.
+
+### The round trip
+
+**Provenance survives `GetPolicy()` → `WithPolicy()` → `GetPolicy()`, in both
+directions, and should.** A derived backstop that stopped being derived after
+one handback would move the defect one step later rather than fix it — and one
+step later is harder to see, because the caller is now holding a policy this
+module produced twice. A caller who sizes a policy in two passes, or reads one
+back out of an instance built from an earlier copy, is doing the thing the
+README recommends. Re-deriving is also idempotent: a still-derived value
+re-derives to the same number, so surviving costs nothing.
+
+The other direction falls out of the same rule without extra machinery. An
+explicit backstop is never recorded, so the resolver's output carries no record
+for that key and no later round trip can invent one. Pinned at three round
+trips in both directions.
+
+### Regression test and gate
+
+`tests/GuardTest.lua` pins the reproduction over all four policy sources, an
+explicit `max_symbols` and `max_work_units` on a copy still refusing, both
+round-trip directions, a caller's table holding the preset numbers being used
+as written, and a caller's malformed backstop on a copy still being refused.
+The test fails against `main` with
+`expected 1573182, got 524606` — the frozen preset number — and nothing else in
+the suite moves.
+
+No decode outcome changes except in the frozen-backstop case, which no policy
+in the suite exercises. The differential gate is clean against v1.3.0: 13,246
+compared calls at the default iteration count and 152,405 at
+`LIBDEFLATEGUARD_FUZZ_ITERATIONS=12`, zero divergences.
 
 ## What the differential harness does not cover
 
