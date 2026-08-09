@@ -15,7 +15,10 @@ shipped in v1.3.0 — a minor version rather than a patch because it changes
 behaviour. Item I was found by review of item H's documentation, and is
 documentation and a test rather than a behaviour change. Item J came from an
 external review of the limit model, which found that two of the five budgets
-could not fire at either shipped preset.
+could not fire at either shipped preset. Item C is the one item that is neither
+done nor dropped: it stays parked as an open draft pull request, and its
+conclusion stands, but its evidence is pinned to v1.1.2 and is marked stale
+under the item.
 
 | #   | Item                                            | State      |
 | --- | ----------------------------------------------- | ---------- |
@@ -224,6 +227,33 @@ trip site. That is pre-existing and is not a reason to change them.
 
 Revisit when someone reports the import case for real. The question of raising
 the default policy is answered below.
+
+### The evidence above has aged; the conclusion has not
+
+Recorded because both facts in the gate list are pinned to a release that is no
+longer the current one, and nothing said so.
+
+**The differential run is against v1.1.2.** The branch is now thirty commits
+behind `main`, and the decode path has moved under it: item E replaced the
+channel codecs' constructor, and item J changed what `max_symbols` and
+`max_work_units` hold when a policy omits them — the second of which is the
+counter the prototype's `work_deadline` is spliced into. So 316854 clean
+compared calls say the prototype matched the module of that day. They say
+nothing about today's, and reading them as current is the mistake this note
+exists to prevent. Any revival regenerates the run against the current release
+first.
+
+**The benchmark gate is now answerable.** `tests/BenchTest.lua` did not exist
+when that measurement was taken; item F built it two releases later. It is
+exactly the instrument for a result reported as inconclusive — alternated
+rounds, medians, the spread printed beside each one, and a stated rule for when
+a delta is below its own floor. The gate that came back inconclusive can be
+settled rather than argued again.
+
+Neither changes anything. The item is parked on the finding that resumability
+alone does not deliver the import case, which is an argument about what the
+feature buys and does not rest on either measurement. Stale evidence for a
+standing decision is still worth marking as stale.
 
 ### Should the default policy be raised? No
 
