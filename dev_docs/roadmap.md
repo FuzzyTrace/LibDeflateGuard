@@ -16,7 +16,10 @@ behaviour. Item I was found by review of item H's documentation, and is
 documentation and a test rather than a behaviour change. Item J came from an
 external review of the limit model, which found that two of the five budgets
 could not fire at either shipped preset. Item K is the composition of I and J
-rather than a fault in either, and ships alongside them. Item C is the one item
+rather than a fault in either. All three shipped in v1.3.1 — a patch rather
+than a minor, because nothing a caller can call changed shape: both budget keys
+remain explicitly settable, and item J moved the two preset values only to the
+bound the other three budgets already made reachable. Item C is the one item
 that is neither done nor dropped: it stays parked as an open draft pull
 request, and its conclusion stands, but its evidence is pinned to v1.1.2 and is
 marked stale under the item.
