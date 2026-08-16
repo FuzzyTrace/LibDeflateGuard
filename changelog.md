@@ -1,4 +1,4 @@
-### LibDeflateGuard unreleased
+### LibDeflateGuard v1.3.2
 
 - **Fixed.** A policy table was read through its metatable and validated
   without it, so a policy whose visible content was `{}` could enforce budgets

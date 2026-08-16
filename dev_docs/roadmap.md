@@ -22,10 +22,18 @@ remain explicitly settable, and item J moved the two preset values only to the
 bound the other three budgets already made reachable. Item L came from a claims
 audit of `README.md` against the code, and is the one item here that is not a
 regression or a composition of earlier ones: the fault it fixes has been in the
-policy validator since the policy table existed. Item C is the one item
-that is neither done nor dropped: it stays parked as an open draft pull
-request, and its conclusion stands, but its evidence is pinned to v1.1.2 and is
-marked stale under the item.
+policy validator since the policy table existed. Item M is that audit closed
+out: the two false claims it turned up that had no defect behind them, and the
+structural finding that outlasts them — no test asserted a single number
+`README.md` publishes, and now the load-bearing ones are pinned. Both shipped
+in v1.3.2, a patch rather than a minor. Item L is the only behaviour change in
+it, and it closes a loosening rather than opening one: a policy this module
+cannot read raw is refused, where before an inherited budget was enforced
+unseen and a raising `__index` escaped a call documented not to raise. Item M
+is documentation and tests only. Item C is the one item that is neither done
+nor dropped: it stays parked as an open draft pull request, and its conclusion
+stands, but its evidence is pinned to v1.1.2 and is marked stale under the
+item.
 
 | #   | Item                                                        | State      |
 | --- | ----------------------------------------------------------- | ---------- |
@@ -41,6 +49,7 @@ marked stale under the item.
 | J   | `max_symbols` and `max_work_units` are derived              | done       |
 | K   | A derived backstop freezes in a `GetPolicy()` copy          | done       |
 | L   | A policy is read through `__index` and validated without it | done       |
+| M   | The claims audit, and the numbers nothing asserted          | done       |
 
 ## A. CI: fuzz soak, differential gate, version check
 

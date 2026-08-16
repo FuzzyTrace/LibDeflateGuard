@@ -957,10 +957,10 @@ it share one module. This fork never touches LibStub, by the decision
 `## Loading the private module` describes, so ten addons that embed it hold ten
 modules.
 
-| Interpreter         | LibDeflateGuard 1.3.1 | upstream `afc3b78` |
-| ------------------- | --------------------- | ------------------ |
-| Lua 5.1.5           | ~176 KiB              | ~156 KiB           |
-| LuaJIT 2.1, `-joff` | ~130 KiB              | ~110 KiB           |
+| Interpreter         | LibDeflateGuard (measured at 1.3.1) | upstream `afc3b78` |
+| ------------------- | ----------------------------------- | ------------------ |
+| Lua 5.1.5           | ~176 KiB                            | ~156 KiB           |
+| LuaJIT 2.1, `-joff` | ~130 KiB                            | ~110 KiB           |
 
 **The Lua 5.1 row is the one that matters.** World of Warcraft ships a patched
 Lua 5.1, so that is the interpreter this library's users run. The LuaJIT row is
