@@ -4012,8 +4012,17 @@ end
 -- 4/3 of max_input_bytes. The channel codecs never grow their input, so their
 -- cap is max_input_bytes itself. Compression is bounded on the bytes going in
 -- rather than the bytes coming out, because that is what the stall is
--- proportional to and what makes the compressed result fit the same policy's
--- decompress input cap on the way back.
+-- proportional to.
+--
+-- It does not make the compressed result fit the same policy's decompress
+-- input cap on the way back, and must not be read as doing so. Deflate grows
+-- an incompressible input: under the default policy, 65536 incompressible
+-- bytes are accepted by this instance's CompressDeflate, come back as 65543,
+-- and are then refused by this instance's own DecompressDeflate with
+-- input_limit_exceeded. README.md `## Compression and codecs` states the same
+-- thing, and tests/GuardTest.lua pins it, because the round trip
+-- guard:DecompressDeflate(guard:CompressDeflate(message)) is the idiom
+-- recommended two sections above it.
 --
 -- The policy is resolved once, at construction, by the same validator the
 -- "limits" parameter uses, and the resolved numbers are held in an upvalue
