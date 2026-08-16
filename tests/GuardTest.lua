@@ -79,6 +79,443 @@ Test("addon-private module export", function()
   AssertEqual(_G.LibDeflateGuard, original_libdeflateguard, "no global export")
 end)
 
+-- The numbers README.md publishes, transcribed by hand out of the document.
+--
+-- Every other assertion in this file recomputes a published figure from this
+-- module's own tables -- math.floor(base * 4 / 3) in "codec decoders cap their
+-- input", DerivedSymbols() near the end of the file -- which pins the
+-- derivation and nothing else. Change the 4/3 ratio or the 318 of slack and
+-- the whole suite moves with the module, and only README.md is left holding
+-- the old numbers. This block is the other half: absolute values copied out of
+-- the document, so that a constant changed on purpose surfaces here as a
+-- documentation task instead of as a silent divergence.
+--
+-- Nothing below may be read out of the module or derived from another entry.
+-- The two sides are only evidence of each other while they are independent.
+-- Line numbers are as of the revision that added this test and will drift; the
+-- section headings will not, so each group names its heading too.
+local README_NUMBERS = {
+  -- `## Safe decoding`, the LIMIT_PRESETS block, README.md lines 318-333.
+  presets = {
+    addon = {
+      max_input_bytes = 65536, -- 64 * 1024
+      max_output_bytes = 524288, -- 512 * 1024
+      max_blocks = 256,
+      max_symbols = 524606,
+      max_work_units = 1134910
+    },
+    generous = {
+      max_input_bytes = 1048576, -- 1024 * 1024
+      max_output_bytes = 8388608, -- 8 * 1024 * 1024
+      max_blocks = 4096,
+      max_symbols = 8388926,
+      max_work_units = 18153790
+    }
+  },
+  -- `## Compression and codecs`, the DEFAULT_CODEC_LIMITS block, README.md
+  -- lines 676-679.
+  default_codec_limits = {
+    print_max_input_bytes = 87381,
+    channel_max_input_bytes = 65536
+  },
+  -- The three print caps the document quotes as absolute byte counts rather
+  -- than as a rule: 87381 at the default 64 KiB, in the DEFAULT_CODEC_LIMITS
+  -- block and again in prose at README.md line 109; 1398101 under `generous`'s
+  -- 1 MiB at line 140; and 262144 for the 192 KiB policy worked through at
+  -- line 145. All three are in `### A paste-sized import string is refused
+  -- before it decodes`, which is where a reader meets the cap.
+  print_caps = {
+    {max_input_bytes = 65536, print_cap = 87381},
+    {max_input_bytes = 1048576, print_cap = 1398101},
+    {max_input_bytes = 196608, print_cap = 262144} -- 192 * 1024
+  },
+  -- `### The two derived backstops`, README.md lines 484-485:
+  --   max_symbols    = 8 * max_input_bytes + 318
+  --   max_work_units = max_symbols + max_output_bytes + 336 * max_blocks
+  symbol_bits_per_byte = 8,
+  symbol_slack = 318,
+  work_per_block = 336,
+  -- `## Safe decoding`, README.md lines 298-302. Fifteen of them, described
+  -- there as the complete set.
+  error_codes = {
+    "invalid_argument", "input_limit_exceeded", "output_limit_exceeded",
+    "work_limit_exceeded", "block_limit_exceeded", "symbol_limit_exceeded",
+    "trailing_data", "truncated_input", "invalid_stream", "checksum_mismatch",
+    "dictionary_required", "dictionary_mismatch", "invalid_escape",
+    "invalid_print", "internal_error"
+  }
+}
+
+local function CountKeys(table_value)
+  local count = 0
+  for _ in pairs(table_value) do count = count + 1 end
+  return count
+end
+
+Test("every number README.md publishes is the number this module enforces",
+     function()
+  for name, published in pairs(README_NUMBERS.presets) do
+    local shipped = Guard.LIMIT_PRESETS[name]
+    assert(type(shipped) == "table", "README names a preset " .. name)
+    AssertEqual(CountKeys(shipped), CountKeys(published),
+                name .. " publishes every key it has")
+    for key, value in pairs(published) do
+      AssertEqual(shipped[key], value, ("README %s.%s"):format(name, key))
+    end
+
+    -- The two formulas, applied to the *published* budgets rather than to the
+    -- module's. Read off the module they would agree with themselves whatever
+    -- the rule became.
+    local symbols = README_NUMBERS.symbol_bits_per_byte *
+                      published.max_input_bytes + README_NUMBERS.symbol_slack
+    AssertEqual(published.max_symbols, symbols,
+                name .. ": published max_symbols matches the published formula")
+    AssertEqual(published.max_work_units,
+                symbols + published.max_output_bytes +
+                  README_NUMBERS.work_per_block * published.max_blocks, name ..
+                  ": published max_work_units matches the published formula")
+  end
+
+  -- The block marks addon as the default, so DEFAULT_LIMITS must be it.
+  for key, value in pairs(README_NUMBERS.presets.addon) do
+    AssertEqual(Guard.DEFAULT_LIMITS[key], value,
+                "README DEFAULT_LIMITS." .. key)
+  end
+
+  for key, value in pairs(README_NUMBERS.default_codec_limits) do
+    AssertEqual(Guard.DEFAULT_CODEC_LIMITS[key], value,
+                "README DEFAULT_CODEC_LIMITS." .. key)
+  end
+  AssertEqual(CountKeys(Guard.DEFAULT_CODEC_LIMITS),
+              CountKeys(README_NUMBERS.default_codec_limits),
+              "DEFAULT_CODEC_LIMITS publishes every key it has")
+
+  -- The absolute print caps, reached the way the document reaches them: raise
+  -- max_input_bytes on a policy and read what the instance derived.
+  for _, row in ipairs(README_NUMBERS.print_caps) do
+    local policy = {
+      max_input_bytes = row.max_input_bytes,
+      max_output_bytes = 8 * 1024 * 1024
+    }
+    local guard = assert(Guard.WithPolicy(policy))
+    AssertEqual(guard:GetCodecLimits().print_max_input_bytes, row.print_cap,
+                ("README print cap for %d bytes in"):format(row.max_input_bytes))
+  end
+end)
+
+Test("ERRORS holds exactly the fifteen codes README.md lists", function()
+  AssertEqual(#README_NUMBERS.error_codes, 15, "README lists fifteen codes")
+
+  local published = {}
+  for _, code in ipairs(README_NUMBERS.error_codes) do
+    assert(not published[code], "duplicate in the README list: " .. code)
+    published[code] = true
+  end
+
+  local shipped = {}
+  for key, value in pairs(Guard.ERRORS) do
+    AssertEqual(type(value), "string", "ERRORS." .. tostring(key) .. " type")
+    assert(not shipped[value], "duplicate value in ERRORS: " .. value)
+    shipped[value] = key
+  end
+
+  -- Set equality in both directions. One direction alone catches only half of
+  -- what goes wrong: a code added without a doc update, and a code the
+  -- document still lists after it was removed or renamed.
+  for code in pairs(published) do
+    assert(shipped[code],
+           "README lists " .. code .. " and ERRORS has no such value")
+  end
+  for value, key in pairs(shipped) do
+    assert(published[value],
+           ("ERRORS.%s = %q is not in the README list"):format(tostring(key),
+                                                               value))
+  end
+  AssertEqual(CountKeys(Guard.ERRORS), #README_NUMBERS.error_codes,
+              "ERRORS is exactly the published set")
+
+  -- Each key is its own value upper-cased, which is what makes the README's
+  -- advice -- compare against the literal, not through this table -- something
+  -- a reader can follow without a second lookup.
+  for value, key in pairs(shipped) do
+    AssertEqual(key, value:upper(), "ERRORS key for " .. value)
+  end
+end)
+
+-- A deterministic high-entropy payload. math.random is not portable between
+-- LuaJIT and PUC Lua 5.1 -- the same seed yields different bytes -- so this is
+-- a Lehmer generator written out, for the same reason tests/FuzzTest.lua
+-- carries its own. 16807 * (2^31 - 2) stays under 2^53, so every product is
+-- exact in a double on both interpreters.
+local function IncompressibleBytes(seed, count)
+  local out, x = {}, seed % 2147483647
+  if x == 0 then x = 1 end
+  for i = 1, count do
+    x = (16807 * x) % 2147483647
+    out[i] = string.char(x % 256)
+  end
+  return table.concat(out)
+end
+
+-- The WithPolicy doc comment used to claim that the derived compression cap is
+-- "what makes the compressed result fit the same policy's decompress input cap
+-- on the way back". It does not, and the claim sat directly above the round
+-- trip README.md recommends twice --
+-- guard:DecompressDeflate(guard:CompressDeflate(message)). Deflate grows an
+-- incompressible input, so the round trip fails on exactly the input the
+-- compression cap admits at its boundary. Documented in
+-- `## Compression and codecs`; pinned here so the comment cannot come back.
+Test("an input at the compression cap can compress past the decompress cap",
+     function()
+  local guard = assert(Guard.WithPolicy())
+  local cap = guard:GetPolicy().max_input_bytes
+  AssertEqual(cap, README_NUMBERS.presets.addon.max_input_bytes,
+              "the default cap is the published one")
+
+  local payload = IncompressibleBytes(20260816, cap)
+  AssertEqual(#payload, cap, "payload is exactly the cap")
+
+  -- Accepted going out: the cap is on the bytes going in.
+  local compressed = guard:CompressDeflate(payload)
+  assert(type(compressed) == "string",
+         "input at exactly the cap must still compress")
+  -- The inequality is the claim. The exact length is asserted beside it so a
+  -- change in it is visible rather than absorbed, not because seven bytes of
+  -- growth is the property.
+  assert(#compressed > cap,
+         ("incompressible input must grow: %d in, %d out"):format(cap,
+                                                                  #compressed))
+  AssertEqual(#compressed, 65543, "observed compressed length")
+
+  -- And refused coming back, by the same instance, with no argument passed.
+  local output, decode_error = guard:DecompressDeflate(compressed)
+  AssertEqual(output, nil, "the round trip must not decode")
+  AssertEqual(decode_error, "input_limit_exceeded",
+              "and must say why in the documented code")
+
+  -- The member itself is well formed; only the budget refuses it. Without
+  -- this the test would also pass if compression had produced garbage.
+  local roomy = assert(Guard.WithPolicy({
+    max_input_bytes = #compressed,
+    max_output_bytes = 1024 * 1024
+  }))
+  assert(roomy:DecompressDeflate(compressed) == payload,
+         "the member is a valid encoding of the payload")
+end)
+
+-- README.md `### Arity` publishes the return count of every public entry
+-- point, and says the table lives there and nowhere else, so nothing else in
+-- the tree pins it. Nesting faults are this repository's recurring bug class:
+-- v1.1.2 exists because an encoder returned a second value into a decoder's
+-- cap slot. Counts are taken with select("#") rather than by unpacking into
+-- locals, because unpacking truncates and is what hid the original fault.
+Test("select('#') on every row of README.md `### Arity`", function()
+  local function Arity(...) return select("#", ...) end
+
+  local text = "hello world hello world hello world"
+  local compressed = Guard:CompressDeflate(text)
+  local zlib = Guard:CompressZlib(text)
+  local dictionary_text = string.rep("dictionary payload ", 4)
+  local dictionary = Guard:CreateDictionary(dictionary_text, #dictionary_text,
+                                            Guard:Adler32(dictionary_text))
+  local deflate_with_dict = Guard:CompressDeflateWithDict(text, dictionary)
+  local zlib_with_dict = Guard:CompressZlibWithDict(text, dictionary)
+  local codec = assert(Guard:CreateCodec("\000", "\001", ""))
+  local instance = assert(Guard.WithPolicy("addon"))
+  local malformed = FromHex("ffffffff")
+
+  -- A reserved set too large for one escape character to suffix. This is the
+  -- `nil, text` half of the CreateCodec row, which is the one asymmetric row
+  -- in the table and the reason it is worth reading twice.
+  local crowded = {}
+  for byte = 0, 199 do crowded[#crowded + 1] = string.char(byte) end
+  crowded = table.concat(crowded)
+
+  -- Built one call at a time rather than as one table literal, so that the
+  -- comment naming each group of README rows stays attached to its group.
+  local rows = {}
+  local function Row(name, expected, call)
+    rows[#rows + 1] = {name = name, expected = expected, call = call}
+  end
+
+  -- Compressors: `str, padding` on success, `nil, code` on a cap.
+  Row("CompressDeflate success", 2,
+      function() return Guard:CompressDeflate(text) end)
+  Row("CompressZlib success", 2, function() return Guard:CompressZlib(text) end)
+  Row("CompressDeflateWithDict success", 2,
+      function() return Guard:CompressDeflateWithDict(text, dictionary) end)
+  Row("CompressZlibWithDict success", 2,
+      function() return Guard:CompressZlibWithDict(text, dictionary) end)
+  Row("CompressDeflate failure", 2,
+      function() return Guard:CompressDeflate(text, {max_input_bytes = 1}) end)
+
+  -- Decompressors: `str, 0` on success, `nil, code` on failure.
+  Row("DecompressDeflate success", 2,
+      function() return Guard:DecompressDeflate(compressed) end)
+  Row("DecompressZlib success", 2,
+      function() return Guard:DecompressZlib(zlib) end)
+  Row("DecompressDeflateWithDict success", 2, function()
+    return Guard:DecompressDeflateWithDict(deflate_with_dict, dictionary)
+  end)
+  Row("DecompressZlibWithDict success", 2, function()
+    return Guard:DecompressZlibWithDict(zlib_with_dict, dictionary)
+  end)
+  Row("DecompressDeflate failure", 2,
+      function() return Guard:DecompressDeflate(malformed) end)
+
+  -- Encoders: exactly one value, which is the v1.1.2 fix.
+  Row("EncodeForPrint", 1, function() return Guard:EncodeForPrint(text) end)
+  Row("EncodeForWoWAddonChannel", 1,
+      function() return Guard:EncodeForWoWAddonChannel("a\000b") end)
+  Row("EncodeForWoWChatChannel", 1,
+      function() return Guard:EncodeForWoWChatChannel("a\000b") end)
+  Row("codec:Encode", 1, function() return codec:Encode("a\000b") end)
+
+  -- Codec decoders. The two channel decoders return a trailing nil on success
+  -- where DecodeForPrint and codec:Decode return one value, which is the row
+  -- the README singles out as the one that matters when a decode result is
+  -- forwarded into another call's argument list.
+  Row("DecodeForPrint success", 1,
+      function() return Guard:DecodeForPrint(Guard:EncodeForPrint(text)) end)
+  Row("DecodeForPrint failure", 2,
+      function() return Guard:DecodeForPrint("!!!!") end)
+  Row("DecodeForWoWAddonChannel success", 2, function()
+    return Guard:DecodeForWoWAddonChannel(
+             Guard:EncodeForWoWAddonChannel("a\000b"))
+  end)
+  Row("DecodeForWoWAddonChannel failure", 2,
+      function() return Guard:DecodeForWoWAddonChannel("\001") end)
+  Row("DecodeForWoWChatChannel success", 2, function()
+    return
+      Guard:DecodeForWoWChatChannel(Guard:EncodeForWoWChatChannel("a\000b"))
+  end)
+  Row("DecodeForWoWChatChannel failure", 2,
+      function() return Guard:DecodeForWoWChatChannel("\001") end)
+  Row("codec:Decode success", 1,
+      function() return codec:Decode(codec:Encode("a\000b")) end)
+  Row("codec:Decode failure", 2, function() return codec:Decode("\001") end)
+
+  -- Constructors and inspection.
+  Row("WithPolicy success", 1, function() return Guard.WithPolicy("addon") end)
+  Row("WithPolicy failure", 2, function() return Guard.WithPolicy("nope") end)
+  Row("CreateCodec success", 1,
+      function() return Guard:CreateCodec("\000", "\001", "") end)
+  Row("CreateCodec failure", 2,
+      function() return Guard:CreateCodec(crowded, "\255", "") end)
+  Row("CreateDictionary success", 1, function()
+    return Guard:CreateDictionary(dictionary_text, #dictionary_text,
+                                  Guard:Adler32(dictionary_text))
+  end)
+  Row("Adler32", 1, function() return Guard:Adler32(text) end)
+  Row("GetPolicy", 1, function() return instance:GetPolicy() end)
+  Row("GetCodecLimits", 1, function() return instance:GetCodecLimits() end)
+
+  -- "The same shapes hold on a WithPolicy instance."
+  Row("instance CompressDeflate success", 2,
+      function() return instance:CompressDeflate(text) end)
+  Row("instance DecompressDeflate success", 2,
+      function() return instance:DecompressDeflate(compressed) end)
+  Row("instance DecodeForPrint success", 1, function()
+    return instance:DecodeForPrint(instance:EncodeForPrint(text))
+  end)
+  Row("instance DecodeForWoWAddonChannel success", 2, function()
+    return instance:DecodeForWoWAddonChannel(
+             instance:EncodeForWoWAddonChannel("a\000b"))
+  end)
+
+  -- Every row in README.md `### Arity` for an entry point this suite can
+  -- reach, and the failure column too.
+  AssertEqual(#rows, 34, "the arity table is covered row by row")
+  for _, row in ipairs(rows) do
+    AssertEqual(Arity(row.call()), row.expected, "README arity: " .. row.name)
+  end
+
+  -- The failure rows must actually be failing. An arity table is satisfied by
+  -- a call that succeeded when it was meant to fail, and would then be
+  -- pinning the wrong row.
+  AssertEqual(select(2, Guard:CompressDeflate(text, {max_input_bytes = 1})),
+              "input_limit_exceeded", "the compressor failure row failed")
+  AssertEqual(select(2, Guard:DecompressDeflate(malformed)), "invalid_stream",
+              "the decompressor failure row failed")
+  AssertEqual(Guard.WithPolicy("nope"), nil, "the WithPolicy failure row")
+  AssertEqual(Guard:CreateCodec(crowded, "\255", ""), nil,
+              "the CreateCodec failure row")
+  AssertEqual(type(select(2, Guard:CreateCodec(crowded, "\255", ""))), "string",
+              "CreateCodec answers English text, not a code from ERRORS")
+end)
+
+Test("a successful decompress answers 0, never the compressor's padding",
+     function()
+  -- README.md `### Arity` publishes `str, 0` for every decompressor and
+  -- `## Safe decoding` calls it the numeric status 0. A compressor's own
+  -- second value is padding_bitlen, which ranges over 0..7, so a decompressor
+  -- that forwarded it would still look like a success tuple.
+  local seen_padding = {}
+  for n = 1, 64 do
+    local text = string.rep("ab", n) .. string.rep("z", n % 7)
+
+    local deflate, padding = Guard:CompressDeflate(text)
+    seen_padding[padding] = true
+    local output, status = Guard:DecompressDeflate(deflate)
+    assert(output == text, "deflate round trip at n = " .. n)
+    AssertEqual(status, 0, "deflate status at n = " .. n)
+
+    local zlib = Guard:CompressZlib(text)
+    local zlib_output, zlib_status = Guard:DecompressZlib(zlib)
+    assert(zlib_output == text, "zlib round trip at n = " .. n)
+    AssertEqual(zlib_status, 0, "zlib status at n = " .. n)
+  end
+
+  -- The claim names 4 to 6 specifically, so the loop has to have reached
+  -- them. Otherwise this test asserts 0 == 0 over a padding of zero.
+  for _, padding in ipairs({4, 5, 6}) do
+    assert(seen_padding[padding],
+           ("this loop must reach padding_bitlen %d, or the claim is empty"):format(
+             padding))
+  end
+end)
+
+-- DecodeForPrint strips leading and trailing control characters and spaces
+-- before decoding, which is inherited from upstream and went undocumented
+-- until the audit in `## M` of dev_docs/roadmap.md. It is the one lenient
+-- decode in a fork whose headline is strict rejection, so it is pinned as
+-- well as written down: a later tightening should be a decision, not a
+-- silent break for every caller pasting a string with a newline on it.
+Test("DecodeForPrint strips the two ends and nothing else", function()
+  local payload = "round trip payload"
+  local encoded = Guard:EncodeForPrint(payload)
+
+  AssertEqual(Guard:DecodeForPrint(encoded), payload, "unpadded")
+  AssertEqual(Guard:DecodeForPrint("  " .. encoded .. "\n"), payload,
+              "leading spaces and a trailing newline")
+  AssertEqual(Guard:DecodeForPrint("\t\r\n " .. encoded .. " \t\r\n"), payload,
+              "tabs and carriage returns at both ends")
+
+  -- Only the ends. An interior space is not forgiven, and the length rule is
+  -- not what catches it: this substitution keeps the length unchanged.
+  local interior = encoded:sub(1, 4) .. " " .. encoded:sub(6)
+  AssertEqual(#interior, #encoded, "the interior case keeps the length")
+  AssertEqual(select(2, Guard:DecodeForPrint(interior)), "invalid_print",
+              "an interior space is still invalid_print")
+
+  -- The cap is applied to the string as passed, before the strip, so padding
+  -- counts against it.
+  local cap = #encoded + 1
+  AssertEqual(select(2, Guard:DecodeForPrint("  " .. encoded, cap)),
+              "input_limit_exceeded", "padding counts against the cap")
+  AssertEqual(Guard:DecodeForPrint(" " .. encoded, cap), payload,
+              "padding inside the cap still decodes")
+
+  -- The channel decoders strip nothing: a leading space is data there, and
+  -- comes back as data.
+  AssertEqual(Guard:DecodeForWoWAddonChannel(
+                " " .. Guard:EncodeForWoWAddonChannel(payload)), " " .. payload,
+              "the addon channel decoder strips nothing")
+  AssertEqual(Guard:DecodeForWoWChatChannel(
+                " " .. Guard:EncodeForWoWChatChannel(payload)), " " .. payload,
+              "the chat channel decoder strips nothing")
+end)
+
 local valid_vectors = {
   {name = "stored", compressed = "010100feff41", expected = "A"},
   {name = "fixed", compressed = "330400", expected = "1"},
